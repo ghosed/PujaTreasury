@@ -64,6 +64,15 @@ const EMPTY_SUMMARY: PipelineSummary = {
   newlySynced: 0,
 };
 
+const SOURCE_CARD_ROWS: string[][] = [
+  ['Check', 'Cash', 'Direct Pay-Payment', 'Zelle'],
+  ['Amazon', 'Home Depot', 'CARD9130', 'CARD7574'],
+  ['Deposit', 'Stripe', 'SumUp', 'WT'],
+  ['Transfer', 'Other'],
+];
+
+const CONFIGURED_SOURCE_SET = new Set(SOURCE_CARD_ROWS.flat());
+
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -615,9 +624,9 @@ export default function App() {
     };
   }, [filteredTransactions]);
 
-  const sourceSummaries = useMemo(() => {
+  const { sourceSummaryMap, extraSources, activeSourceCount } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const map = new Map<
+    const rawMap = new Map<
       string,
       {
         source: string;
@@ -650,7 +659,7 @@ export default function App() {
         if (!hay.includes(q)) continue;
       }
 
-      const entry = map.get(tx.source) ?? {
+      const entry = rawMap.get(tx.source) ?? {
         source: tx.source,
         count: 0,
         incomeCents: 0,
@@ -662,22 +671,42 @@ export default function App() {
       } else {
         entry.expenseCents += Math.abs(tx.amountCents);
       }
-      map.set(tx.source, entry);
+      rawMap.set(tx.source, entry);
     }
 
-    return Array.from(map.values())
-      .map((item) => ({
+    const summaryMap = new Map<
+      string,
+      {
+        source: string;
+        count: number;
+        income: number;
+        expense: number;
+        net: number;
+      }
+    >();
+
+    const extras: string[] = [];
+
+    for (const item of rawMap.values()) {
+      summaryMap.set(item.source, {
         source: item.source,
         count: item.count,
         income: item.incomeCents / 100,
         expense: item.expenseCents / 100,
         net: (item.incomeCents - item.expenseCents) / 100,
-        volumeCents: item.incomeCents + item.expenseCents,
-      }))
-      .sort((a, b) => {
-        if (b.volumeCents !== a.volumeCents) return b.volumeCents - a.volumeCents;
-        return a.source.localeCompare(b.source);
       });
+      if (!CONFIGURED_SOURCE_SET.has(item.source)) {
+        extras.push(item.source);
+      }
+    }
+
+    extras.sort((a, b) => a.localeCompare(b));
+
+    return {
+      sourceSummaryMap: summaryMap,
+      extraSources: extras,
+      activeSourceCount: rawMap.size,
+    };
   }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
 
   const unmappedStatements = statements.filter((s) => s.mappingStatus === 'needs-mapping');
@@ -1151,8 +1180,8 @@ export default function App() {
             </div>
 
             {/* Summary by Source Cards */}
-            {sourceSummaries.length > 0 && (
-              <section aria-label="Summary by Source" className="space-y-2.5">
+            {transactions.length > 0 && (
+              <section aria-label="Summary by Source" className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs">
                     <h2 className="font-semibold text-slate-900">Summary by Source</h2>
@@ -1160,8 +1189,8 @@ export default function App() {
                       ·
                     </span>
                     <span className="font-mono text-slate-500 tabular-nums">
-                      {sourceSummaries.length}{' '}
-                      {sourceSummaries.length === 1 ? 'source' : 'sources'}
+                      {activeSourceCount} active{' '}
+                      {activeSourceCount === 1 ? 'source' : 'sources'}
                     </span>
                     <span aria-hidden="true" className="text-slate-300">
                       ·
@@ -1182,69 +1211,94 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  {sourceSummaries.map((item) => {
-                    const isSelected = sourceFilter === item.source;
-                    return (
-                      <button
-                        key={item.source}
-                        type="button"
-                        onClick={() =>
-                          setSourceFilter((prev) =>
-                            prev === item.source ? 'all' : item.source
-                          )
-                        }
-                        aria-pressed={isSelected}
-                        className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
-                          isSelected
-                            ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
-                            : 'border-slate-200 bg-white hover:border-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-xs font-semibold text-slate-900">
-                            {item.source}
-                          </span>
-                          <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
-                            {item.count.toLocaleString()}{' '}
-                            {item.count === 1 ? 'txn' : 'txns'}
-                          </span>
-                        </div>
+                <div className="space-y-3">
+                  {(extraSources.length > 0
+                    ? [...SOURCE_CARD_ROWS, extraSources]
+                    : SOURCE_CARD_ROWS
+                  ).map((rowSources, rowIndex) => (
+                    <div
+                      key={rowIndex}
+                      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+                    >
+                      {rowSources.map((sourceName) => {
+                        const item = sourceSummaryMap.get(sourceName) ?? {
+                          source: sourceName,
+                          count: 0,
+                          income: 0,
+                          expense: 0,
+                          net: 0,
+                        };
+                        const isSelected = sourceFilter === sourceName;
+                        const isEmpty = item.count === 0;
 
-                        <div
-                          className={`mt-2 font-mono text-base font-semibold tracking-tight tabular-nums ${
-                            item.net > 0
-                              ? 'text-emerald-700'
-                              : item.net < 0
-                                ? 'text-red-700'
-                                : 'text-slate-900'
-                          }`}
-                        >
-                          {item.net.toLocaleString('en-US', {
-                            style: 'currency',
-                            currency: 'USD',
-                          })}
-                        </div>
+                        return (
+                          <button
+                            key={`${rowIndex}-${sourceName}`}
+                            type="button"
+                            onClick={() =>
+                              setSourceFilter((prev) =>
+                                prev === sourceName ? 'all' : sourceName
+                              )
+                            }
+                            aria-pressed={isSelected}
+                            className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
+                              isSelected
+                                ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
+                                : isEmpty
+                                  ? 'border-slate-200 bg-white/70 hover:border-slate-300'
+                                  : 'border-slate-200 bg-white hover:border-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-xs font-semibold text-slate-900">
+                                {item.source}
+                              </span>
+                              <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
+                                {item.count.toLocaleString()}{' '}
+                                {item.count === 1 ? 'txn' : 'txns'}
+                              </span>
+                            </div>
 
-                        <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] tabular-nums">
-                          <span className="text-emerald-700">
-                            +
-                            {item.income.toLocaleString('en-US', {
-                              style: 'currency',
-                              currency: 'USD',
-                            })}
-                          </span>
-                          <span className="text-red-700">
-                            -
-                            {item.expense.toLocaleString('en-US', {
-                              style: 'currency',
-                              currency: 'USD',
-                            })}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
+                            <div
+                              className={`mt-2 font-mono text-base font-semibold tracking-tight tabular-nums ${
+                                isEmpty
+                                  ? 'text-slate-400'
+                                  : item.net > 0
+                                    ? 'text-emerald-700'
+                                    : item.net < 0
+                                      ? 'text-red-700'
+                                      : 'text-slate-900'
+                              }`}
+                            >
+                              {item.net.toLocaleString('en-US', {
+                                style: 'currency',
+                                currency: 'USD',
+                              })}
+                            </div>
+
+                            <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] tabular-nums">
+                              <span
+                                className={isEmpty ? 'text-slate-400' : 'text-emerald-700'}
+                              >
+                                +
+                                {item.income.toLocaleString('en-US', {
+                                  style: 'currency',
+                                  currency: 'USD',
+                                })}
+                              </span>
+                              <span className={isEmpty ? 'text-slate-400' : 'text-red-700'}>
+                                -
+                                {item.expense.toLocaleString('en-US', {
+                                  style: 'currency',
+                                  currency: 'USD',
+                                })}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               </section>
             )}

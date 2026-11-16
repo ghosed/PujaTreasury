@@ -42,6 +42,10 @@ export interface NormalizedTransaction {
   occurrenceIndex: number;
   reviewStatus: ReviewStatus;
   syncStatus: SyncStatus;
+  /** Linked Exp_ID from Expense_Ledger ("Target ID" column in Bank Ledger) */
+  targetId?: string;
+  /** Exact 1-based row number in Google Sheets when loaded from the sheet */
+  sheetRowNumber?: number | null;
 }
 
 export interface PipelineSummary {
@@ -63,6 +67,8 @@ export interface SyncPlan {
   tabName: AccountType;
   tabExists: boolean;
   needsHeader: boolean;
+  needsTargetIdHeader?: boolean;
+  targetIdColIndex?: number;
   existingIdsCount: number;
   toAppend: NormalizedTransaction[];
   skippedAlreadySynced: NormalizedTransaction[];

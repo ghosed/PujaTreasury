@@ -161,6 +161,7 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Reference #</th>
               <th className="px-3 py-2.5 font-medium">Description</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Unique ID</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Target ID</th>
               <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">
                 State / Action
               </th>
@@ -228,6 +229,18 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                   </td>
                   <td className="px-3 py-2.5 font-mono text-[11px] text-slate-500 whitespace-nowrap tabular-nums">
                     {tx.uniqueId}
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-[11px] whitespace-nowrap tabular-nums">
+                    {tx.targetId ? (
+                      <span
+                        className="font-medium text-teal-700"
+                        title={`Linked Expense Exp_ID: ${tx.targetId}`}
+                      >
+                        {tx.targetId}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-right whitespace-nowrap">
                     {isFlagged ? (

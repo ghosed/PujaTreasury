@@ -145,7 +145,8 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
         <table className="w-full border-collapse text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-              <th className="px-4 py-2.5 font-medium whitespace-nowrap">
+              <th className="px-4 py-2.5 font-medium whitespace-nowrap">State / Edit</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                 <button
                   type="button"
                   onClick={onToggleDateSort}
@@ -172,9 +173,8 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                 Puja / Payment Mode
               </th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Recon Source / ID</th>
-              <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">
-                State / Edit
+              <th className="px-4 py-2.5 font-medium whitespace-nowrap">
+                Recon Source / Recon Source_ID
               </th>
             </tr>
           </thead>
@@ -196,7 +196,27 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                     isStaged ? 'bg-teal-50/30 hover:bg-teal-50/60' : 'hover:bg-slate-50/80'
                   }`}
                 >
-                  <td className="px-4 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    <div className="inline-flex items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => onEditRecord(rec)}
+                        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:text-teal-800"
+                        title={`Edit ${rec.expId}`}
+                      >
+                        <Pencil className="h-3 w-3" aria-hidden="true" />
+                        Edit
+                      </button>
+                      <span
+                        className={`text-[11px] ${
+                          isStaged ? 'font-medium text-teal-700' : 'text-slate-500'
+                        }`}
+                      >
+                        {isStaged ? 'Staged (CSV)' : 'In Sheet'}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">
                     {rec.date}
                   </td>
                   <td className="px-3 py-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap tabular-nums">
@@ -239,7 +259,7 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                       </div>
                     )}
                   </td>
-                  <td className="px-3 py-2.5">
+                  <td className="px-4 py-2.5">
                     <div className="text-slate-700 whitespace-nowrap">
                       {rec.reconSource || '—'}
                     </div>
@@ -248,26 +268,6 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                         {rec.reconSourceId}
                       </div>
                     )}
-                  </td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                    <div className="inline-flex items-center justify-end gap-2.5">
-                      <span
-                        className={`text-[11px] ${
-                          isStaged ? 'font-medium text-teal-700' : 'text-slate-500'
-                        }`}
-                      >
-                        {isStaged ? 'Staged (CSV)' : 'In Sheet'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => onEditRecord(rec)}
-                        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:text-teal-800"
-                        title={`Edit ${rec.expId}`}
-                      >
-                        <Pencil className="h-3 w-3" aria-hidden="true" />
-                        Edit
-                      </button>
-                    </div>
                   </td>
                 </tr>
               );

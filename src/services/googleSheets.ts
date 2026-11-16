@@ -21,6 +21,7 @@ export const SHEET_HEADERS = [
   'Description',
   'Reference #',
   'Source',
+  'Target ID',
 ] as const;
 
 export class SheetsApiError extends Error {
@@ -40,6 +41,21 @@ interface SpreadsheetMetadata {
       title?: string;
     };
   }>;
+}
+
+function colIndexToA1(index: number): string {
+  let col = '';
+  let n = index + 1;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    col = String.fromCharCode(65 + rem) + col;
+    n = Math.floor((n - 1) / 26);
+  }
+  return col;
+}
+
+function normalizeHeader(h: string): string {
+  return h.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 async function sheetsFetch<T>(
@@ -75,6 +91,8 @@ async function sheetsFetch<T>(
 export interface LoadedSheetLedger {
   spreadsheetTitle: string;
   tabExists: boolean;
+  hasTargetIdHeader: boolean;
+  targetIdColIndex: number;
   transactions: NormalizedTransaction[];
   existingIds: Set<string>;
 }
@@ -99,10 +117,18 @@ export async function fetchSheetLedger(
   const transactions: NormalizedTransaction[] = [];
 
   if (!tabExists) {
-    return { spreadsheetTitle, tabExists: false, transactions, existingIds };
+    return {
+      spreadsheetTitle,
+      tabExists: false,
+      hasTargetIdHeader: false,
+      targetIdColIndex: 7,
+      transactions,
+      existingIds,
+    };
   }
 
-  const range = encodeURIComponent(`${tabName}!A:G`);
+  const safeTab = `'${tabName.replace(/'/g, "''")}'`;
+  const range = encodeURIComponent(`${safeTab}!A:Z`);
   const valuesResp = await sheetsFetch<{ values?: Array<Array<string | number>> }>(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       spreadsheetId
@@ -111,7 +137,29 @@ export async function fetchSheetLedger(
   );
 
   const rows = valuesResp.values ?? [];
-  for (let i = 0; i < rows.length; i++) {
+  let hasHeaderRow = false;
+  let hasTargetIdHeader = false;
+  let targetIdColIndex = 7;
+
+  if (rows.length > 0) {
+    const firstRow = rows[0] ?? [];
+    const c0 = normalizeHeader(String(firstRow[0] ?? ''));
+    const c1 = normalizeHeader(String(firstRow[1] ?? ''));
+    if (c0 === 'uniquetransactionid' || c1 === 'date') {
+      hasHeaderRow = true;
+      const foundTargetIdx = firstRow.findIndex(
+        (cell) => normalizeHeader(String(cell ?? '')) === 'targetid'
+      );
+      if (foundTargetIdx !== -1) {
+        hasTargetIdHeader = true;
+        targetIdColIndex = foundTargetIdx;
+      } else {
+        targetIdColIndex = Math.max(firstRow.length, 7);
+      }
+    }
+  }
+
+  for (let i = hasHeaderRow ? 1 : 0; i < rows.length; i++) {
     const row = rows[i];
     if (!row || row.every((cell) => String(cell ?? '').trim() === '')) {
       continue;
@@ -119,15 +167,6 @@ export async function fetchSheetLedger(
 
     const col0 = String(row[0] ?? '').trim();
     const col1 = String(row[1] ?? '').trim();
-
-    if (
-      i === 0 &&
-      (col0.toLowerCase() === 'unique transaction id' ||
-        col0.toLowerCase() === 'unique_transaction_id' ||
-        col1.toLowerCase() === 'date')
-    ) {
-      continue;
-    }
 
     const normalizedDate = normalizeDate(col1) || col1;
     const rawAmount = row[2];
@@ -154,6 +193,7 @@ export async function fetchSheetLedger(
     const referenceNumber = String(row[5] ?? '').trim();
     const rawSource = String(row[6] ?? '').trim();
     const source = rawSource || categorizeSource(description);
+    const targetId = String(row[targetIdColIndex] ?? '').trim();
     const uniqueId = col0 || `SHEET-${tabName.toUpperCase()}-${i + 1}`;
 
     if (col0) {
@@ -175,12 +215,16 @@ export async function fetchSheetLedger(
       occurrenceIndex: 1,
       reviewStatus: 'ok',
       syncStatus: 'already-in-sheet',
+      targetId,
+      sheetRowNumber: i + 1,
     });
   }
 
   return {
     spreadsheetTitle,
     tabExists: true,
+    hasTargetIdHeader,
+    targetIdColIndex,
     transactions,
     existingIds,
   };
@@ -205,9 +249,12 @@ export async function prepareSyncPlan(
 
   const existingIds = new Set<string>();
   let needsHeader = true;
+  let needsTargetIdHeader = false;
+  let targetIdColIndex = 7;
 
   if (tabExists) {
-    const range = encodeURIComponent(`${tabName}!A:A`);
+    const safeTab = `'${tabName.replace(/'/g, "''")}'`;
+    const range = encodeURIComponent(`${safeTab}!A:Z`);
     const valuesResp = await sheetsFetch<{ values?: string[][] }>(
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
         spreadsheetId
@@ -215,14 +262,27 @@ export async function prepareSyncPlan(
       accessToken
     );
 
-    const colA = valuesResp.values ?? [];
-    if (colA.length > 0 && colA[0]?.[0]?.trim()) {
-      const firstCell = colA[0][0].trim().toLowerCase();
-      needsHeader =
-        firstCell !== 'unique transaction id' && firstCell !== 'unique_transaction_id';
-      for (const row of colA) {
+    const rows = valuesResp.values ?? [];
+    if (rows.length > 0 && rows[0]?.[0]?.trim()) {
+      const firstCell = normalizeHeader(rows[0][0]);
+      needsHeader = firstCell !== 'uniquetransactionid';
+
+      if (!needsHeader) {
+        const foundTargetIdx = rows[0].findIndex(
+          (cell) => normalizeHeader(String(cell ?? '')) === 'targetid'
+        );
+        if (foundTargetIdx !== -1) {
+          targetIdColIndex = foundTargetIdx;
+          needsTargetIdHeader = false;
+        } else {
+          targetIdColIndex = Math.max(rows[0].length, 7);
+          needsTargetIdHeader = true;
+        }
+      }
+
+      for (const row of rows) {
         const val = row[0]?.trim();
-        if (val && val.toLowerCase() !== 'unique transaction id') {
+        if (val && normalizeHeader(val) !== 'uniquetransactionid') {
           existingIds.add(val);
         }
       }
@@ -255,6 +315,8 @@ export async function prepareSyncPlan(
       tabName,
       tabExists,
       needsHeader,
+      needsTargetIdHeader,
+      targetIdColIndex,
       existingIdsCount: existingIds.size,
       toAppend,
       skippedAlreadySynced,
@@ -268,8 +330,16 @@ export async function executeSyncPlan(
   accessToken: string,
   plan: SyncPlan
 ): Promise<SyncResult> {
-  const { spreadsheetId, tabName, tabExists, needsHeader, toAppend, skippedAlreadySynced } =
-    plan;
+  const {
+    spreadsheetId,
+    tabName,
+    tabExists,
+    needsHeader,
+    needsTargetIdHeader,
+    targetIdColIndex = 7,
+    toAppend,
+    skippedAlreadySynced,
+  } = plan;
 
   if (!tabExists) {
     await sheetsFetch(
@@ -292,6 +362,23 @@ export async function executeSyncPlan(
         }),
       }
     );
+  } else if (!needsHeader && needsTargetIdHeader) {
+    const safeTab = `'${tabName.replace(/'/g, "''")}'`;
+    const colA1 = colIndexToA1(targetIdColIndex);
+    const headerRange = encodeURIComponent(`${safeTab}!${colA1}1`);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values/${headerRange}?valueInputOption=USER_ENTERED`,
+      accessToken,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          majorDimension: 'ROWS',
+          values: [['Target ID']],
+        }),
+      }
+    );
   }
 
   const rowsToWrite: Array<Array<string | number>> = [];
@@ -300,7 +387,7 @@ export async function executeSyncPlan(
   }
 
   for (const tx of toAppend) {
-    rowsToWrite.push([
+    const row: Array<string | number> = [
       tx.uniqueId,
       tx.date,
       tx.amount,
@@ -308,12 +395,18 @@ export async function executeSyncPlan(
       tx.description,
       tx.referenceNumber,
       tx.source,
-    ]);
+    ];
+    while (row.length < targetIdColIndex) {
+      row.push('');
+    }
+    row[targetIdColIndex] = tx.targetId ?? '';
+    rowsToWrite.push(row);
   }
 
   if (rowsToWrite.length > 0) {
     const CHUNK_SIZE = 500;
-    const range = encodeURIComponent(`${tabName}!A1`);
+    const safeTab = `'${tabName.replace(/'/g, "''")}'`;
+    const range = encodeURIComponent(`${safeTab}!A1`);
 
     for (let i = 0; i < rowsToWrite.length; i += CHUNK_SIZE) {
       const chunk = rowsToWrite.slice(i, i + CHUNK_SIZE);
@@ -340,4 +433,55 @@ export async function executeSyncPlan(
     skippedCount: skippedAlreadySynced.length,
     syncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
+}
+
+export interface BankTargetIdUpdate {
+  sheetRowNumber: number;
+  targetId: string;
+}
+
+export async function batchUpdateBankTargetIds(
+  accessToken: string,
+  spreadsheetId: string,
+  tabName: AccountType,
+  targetIdColIndex: number,
+  ensureTargetIdHeader: boolean,
+  updates: BankTargetIdUpdate[]
+): Promise<number> {
+  const colA1 = colIndexToA1(targetIdColIndex);
+  const safeTab = `'${tabName.replace(/'/g, "''")}'`;
+  const data: Array<{ range: string; values: string[][] }> = [];
+
+  if (ensureTargetIdHeader) {
+    data.push({
+      range: `${safeTab}!${colA1}1`,
+      values: [['Target ID']],
+    });
+  }
+
+  for (const upd of updates) {
+    if (!upd.sheetRowNumber || upd.sheetRowNumber < 1) continue;
+    data.push({
+      range: `${safeTab}!${colA1}${upd.sheetRowNumber}`,
+      values: [[upd.targetId]],
+    });
+  }
+
+  if (data.length === 0) return 0;
+
+  await sheetsFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values:batchUpdate`,
+    accessToken,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        valueInputOption: 'USER_ENTERED',
+        data,
+      }),
+    }
+  );
+
+  return updates.length;
 }

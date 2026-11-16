@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowLeftRight,
   Calendar,
   CheckCircle2,
   Columns3,
@@ -49,6 +50,10 @@ interface ExpenseModuleProps {
   isLoggingIn: boolean;
   onSignIn: () => void;
   onAuthExpired: () => void;
+  onOpenReconcile?: () => void;
+  refreshNonce?: number;
+  externalStatusMessage?: string | null;
+  onDismissExternalStatus?: () => void;
 }
 
 const EMPTY_LOOKUPS: ExpenseLookups = {
@@ -74,9 +79,14 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   isLoggingIn,
   onSignIn,
   onAuthExpired,
+  onOpenReconcile,
+  refreshNonce = 0,
+  externalStatusMessage = null,
+  onDismissExternalStatus,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isFetchingRef = useRef(false);
+  const prevRefreshNonceRef = useRef(refreshNonce);
 
   // Google Sheet state
   const [sheetMeta, setSheetMeta] = useState<ExpenseSheetMeta | null>(null);
@@ -175,6 +185,16 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       setHasLoadedSheet(false);
     }
   }, [needsAuth, hasLoadedSheet, loadWorkspace]);
+
+  // Reload Expense_Ledger when external reconciliation updates Google Sheets
+  useEffect(() => {
+    if (refreshNonce !== prevRefreshNonceRef.current) {
+      prevRefreshNonceRef.current = refreshNonce;
+      if (!needsAuth) {
+        void loadWorkspace();
+      }
+    }
+  }, [refreshNonce, needsAuth, loadWorkspace]);
 
   // Process uploaded expense CSVs whenever files, existing Sheet IDs, or lookups change
   useEffect(() => {
@@ -983,6 +1003,18 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
+              {onOpenReconcile && (
+                <button
+                  type="button"
+                  onClick={onOpenReconcile}
+                  disabled={needsAuth || isLoadingSheet || isSubmitting}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
+                >
+                  <ArrowLeftRight className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                  Reconcile with Bank Ledger
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={handleOpenManualEntry}
@@ -1300,6 +1332,27 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 Open Expense_Ledger
                 <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
               </a>
+            </div>
+          )}
+
+          {externalStatusMessage && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-950">
+              <div className="flex items-center gap-2">
+                <CheckCircle2
+                  className="h-4 w-4 shrink-0 text-emerald-700"
+                  aria-hidden="true"
+                />
+                <span>{externalStatusMessage}</span>
+              </div>
+              {onDismissExternalStatus && (
+                <button
+                  type="button"
+                  onClick={onDismissExternalStatus}
+                  className="font-medium text-emerald-800 hover:underline whitespace-nowrap"
+                >
+                  Dismiss
+                </button>
+              )}
             </div>
           )}
 

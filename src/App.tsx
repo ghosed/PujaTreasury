@@ -4,6 +4,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowDownRight,
+  ArrowLeftRight,
   ArrowUpRight,
   Calendar,
   CheckCircle2,
@@ -48,6 +49,7 @@ import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { ColumnMappingModal } from './components/ColumnMappingModal';
 import { SyncConfirmModal } from './components/SyncConfirmModal';
 import { TransactionGrid } from './components/TransactionGrid';
+import { ReconcileCompleteSummary, ReconcileModal } from './components/ReconcileModal';
 import { ExpenseModule } from './components/expense/ExpenseModule';
 import { EXPENSE_SPREADSHEET_ID } from './services/expenseSheets';
 
@@ -144,6 +146,9 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingSyncPlan, setPendingSyncPlan] = useState<SyncPlan | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [reconcileModalOpen, setReconcileModalOpen] = useState(false);
+  const [expenseRefreshNonce, setExpenseRefreshNonce] = useState(0);
+  const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadSheetLedger = useCallback(
@@ -432,6 +437,25 @@ export default function App() {
     await loadSheetLedger(account, token);
   };
 
+  const handleReconcileComplete = async (res: ReconcileCompleteSummary) => {
+    const token = await getAccessToken();
+    if (token) {
+      for (const tab of ['Puja', 'Regular'] as AccountType[]) {
+        if (loadedAccounts[tab] || res.updatedTabs.includes(tab)) {
+          await loadSheetLedger(tab, token);
+        }
+      }
+    }
+    setExpenseRefreshNonce((n) => n + 1);
+    if (res.bankUpdatedCount === 0 && res.expenseUpdatedCount === 0) {
+      setReconcileMessage('Initialized "Target ID" column header in Bank Ledger.');
+    } else {
+      setReconcileMessage(
+        `Reconciled expenses: updated ${res.bankUpdatedCount.toLocaleString()} Bank "Target ID" cell(s) and ${res.expenseUpdatedCount.toLocaleString()} Expense "Recon Source_ID" cell(s).`
+      );
+    }
+  };
+
   const handleStartSync = async () => {
     setErrorMessage(null);
     setSyncResult(null);
@@ -581,6 +605,7 @@ export default function App() {
           tx.description,
           tx.referenceNumber,
           tx.source,
+          tx.targetId ?? '',
         ]
           .map(escapeCsv)
           .join(',')
@@ -693,7 +718,7 @@ export default function App() {
       }
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -774,7 +799,7 @@ export default function App() {
       if (endDate && tx.date > endDate) continue;
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
 
@@ -937,6 +962,10 @@ export default function App() {
           isLoggingIn={isLoggingIn}
           onSignIn={handleSignIn}
           onAuthExpired={() => setNeedsAuth(true)}
+          onOpenReconcile={() => setReconcileModalOpen(true)}
+          refreshNonce={expenseRefreshNonce}
+          externalStatusMessage={reconcileMessage}
+          onDismissExternalStatus={() => setReconcileMessage(null)}
         />
       ) : (
         <>
@@ -1152,6 +1181,19 @@ export default function App() {
                   />
                   {isLoadingSheet ? 'Loading Sheet Ledger...' : 'Refresh Ledger from Sheet'}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setReconcileModalOpen(true)}
+                  disabled={needsAuth || isLoadingSheet || isPreparingSync || isSyncing}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
+                >
+                  <ArrowLeftRight
+                    className="h-3.5 w-3.5 shrink-0 text-teal-700"
+                    aria-hidden="true"
+                  />
+                  Reconcile with Expense Ledger
+                </button>
               </div>
 
               {needsAuth && (
@@ -1175,23 +1217,35 @@ export default function App() {
                   <span aria-hidden="true">/</span>
                   <span className="font-medium text-slate-800">{account} Tab</span>
                   <span aria-hidden="true">·</span>
-                  <span>7-Column Incremental Upsert</span>
+                  <span>8-Column Incremental Upsert</span>
                 </div>
                 <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   Statement Processing &amp; Ledger Preview
                 </h1>
               </div>
 
-              {transactions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   type="button"
-                  onClick={handleExportPreviewCsv}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                  onClick={() => setReconcileModalOpen(true)}
+                  disabled={needsAuth || isLoadingSheet}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
                 >
-                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                  Export Normalized CSV
+                  <ArrowLeftRight className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                  Reconcile Expenses
                 </button>
-              )}
+
+                {transactions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleExportPreviewCsv}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                    Export Normalized CSV
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Time Period Filter Bar for Income & Expense Totals */}
@@ -1556,6 +1610,26 @@ export default function App() {
               </div>
             )}
 
+            {/* Reconciliation Success Alert */}
+            {reconcileMessage && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-950">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2
+                    className="h-4 w-4 shrink-0 text-emerald-700"
+                    aria-hidden="true"
+                  />
+                  <span>{reconcileMessage}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReconcileMessage(null)}
+                  className="font-medium text-emerald-800 hover:underline whitespace-nowrap"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
             {/* Needs Column Mapping Callout */}
             {unmappedStatements.length > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
@@ -1734,6 +1808,15 @@ export default function App() {
       />
         </>
       )}
+
+      {/* Cross-Ledger Bank <-> Expense Reconciliation Modal */}
+      <ReconcileModal
+        isOpen={reconcileModalOpen}
+        activeBankTab={account}
+        onClose={() => setReconcileModalOpen(false)}
+        onAuthExpired={() => setNeedsAuth(true)}
+        onReconciled={handleReconcileComplete}
+      />
     </div>
   );
 }

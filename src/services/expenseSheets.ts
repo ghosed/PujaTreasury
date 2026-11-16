@@ -19,7 +19,7 @@ export const CANONICAL_EXPENSE_HEADERS = [
   'Puja',
   'Payment Mode',
   'Recon Source',
-  'Recon Source ID',
+  'Recon Source_ID',
 ] as const;
 
 interface SpreadsheetMetadata {
@@ -763,4 +763,69 @@ export async function updateExpenseRecord(
       }),
     }
   );
+}
+
+export interface ExpenseReconUpdate {
+  sheetRowNumber: number;
+  reconSourceId: string;
+}
+
+export async function batchUpdateExpenseReconIds(
+  accessToken: string,
+  meta: ExpenseSheetMeta,
+  updates: ExpenseReconUpdate[]
+): Promise<number> {
+  if (updates.length === 0) return 0;
+
+  const fieldIdx = buildColumnFieldMap(meta.columnHeaders);
+  let reconIdColIndex = fieldIdx.get('reconSourceId');
+  let ensureHeader = false;
+
+  if (reconIdColIndex === undefined) {
+    reconIdColIndex = Math.max(meta.columnHeaders.length, 10);
+    ensureHeader = !meta.needsHeader;
+  }
+
+  const colA1 = colIndexToA1(reconIdColIndex);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const data: Array<{ range: string; values: string[][] }> = [];
+
+  if (ensureHeader) {
+    data.push({
+      range: `${safeTab}!${colA1}1`,
+      values: [['Recon Source_ID']],
+    });
+  }
+
+  let updatedRowCount = 0;
+  for (const upd of updates) {
+    if (!upd.sheetRowNumber || upd.sheetRowNumber < 1) continue;
+    data.push({
+      range: `${safeTab}!${colA1}${upd.sheetRowNumber}`,
+      values: [[upd.reconSourceId]],
+    });
+    updatedRowCount++;
+  }
+
+  if (data.length === 0) return 0;
+
+  const CHUNK_SIZE = 1000;
+  for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+    const chunk = data.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'USER_ENTERED',
+          data: chunk,
+        }),
+      }
+    );
+  }
+
+  return updatedRowCount;
 }

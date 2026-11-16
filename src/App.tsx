@@ -51,11 +51,13 @@ import { SyncConfirmModal } from './components/SyncConfirmModal';
 import { TransactionGrid } from './components/TransactionGrid';
 import { ReconcileCompleteSummary, ReconcileModal } from './components/ReconcileModal';
 import { ExpenseModule } from './components/expense/ExpenseModule';
+import { ChatbotModule } from './components/chatbot/ChatbotModule';
 import { EXPENSE_SPREADSHEET_ID } from './services/expenseSheets';
 
-type ActiveModule = 'statements' | 'expenses';
+type ActiveModule = 'statements' | 'expenses' | 'chatbot';
 type StatusFilter = 'all' | 'ready' | 'review' | 'discarded' | 'in-sheet';
 type TypeFilter = 'all' | 'Income' | 'Expense';
+type LinkFilter = 'all' | 'unlinked-expenses' | 'linked-expenses';
 
 const EMPTY_SUMMARY: PipelineSummary = {
   totalRawRows: 0,
@@ -136,6 +138,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [linkFilter, setLinkFilter] = useState<LinkFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -580,11 +583,8 @@ export default function App() {
     }
   };
 
-  const handleExportPreviewCsv = () => {
-    const eligible = transactions.filter(
-      (tx) => tx.reviewStatus === 'ok' || tx.reviewStatus === 'kept-distinct'
-    );
-    if (eligible.length === 0) return;
+  const exportTransactionsCsv = (rows: NormalizedTransaction[], fileName: string) => {
+    if (rows.length === 0) return;
 
     const escapeCsv = (val: string | number) => {
       const s = String(val);
@@ -596,7 +596,7 @@ export default function App() {
 
     const lines = [
       SHEET_HEADERS.join(','),
-      ...eligible.map((tx) =>
+      ...rows.map((tx) =>
         [
           tx.uniqueId,
           tx.date,
@@ -616,11 +616,30 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${account.toLowerCase()}-normalized-statements.csv`;
+    link.download = fileName;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportPreviewCsv = () => {
+    const eligible = transactions.filter(
+      (tx) => tx.reviewStatus === 'ok' || tx.reviewStatus === 'kept-distinct'
+    );
+    exportTransactionsCsv(eligible, `${account.toLowerCase()}-normalized-statements.csv`);
+  };
+
+  const handleExportUnlinkedExpensesCsv = () => {
+    const sorted = [...unlinkedExpenseSummary.transactions].sort((a, b) => {
+      const cmp =
+        dateSortOrder === 'desc'
+          ? b.date.localeCompare(a.date)
+          : a.date.localeCompare(b.date);
+      if (cmp !== 0) return cmp;
+      return a.occurrenceIndex - b.occurrenceIndex;
+    });
+    exportTransactionsCsv(sorted, `${account.toLowerCase()}-unlinked-expenses.csv`);
   };
 
   const availableSources = useMemo(() => {
@@ -707,6 +726,15 @@ export default function App() {
       if (typeFilter !== 'all' && tx.transactionType !== typeFilter) {
         return false;
       }
+      if (linkFilter === 'unlinked-expenses') {
+        if (tx.transactionType !== 'Expense' || Boolean(tx.targetId?.trim())) {
+          return false;
+        }
+      } else if (linkFilter === 'linked-expenses') {
+        if (tx.transactionType !== 'Expense' || !tx.targetId?.trim()) {
+          return false;
+        }
+      }
       if (sourceFilter !== 'all' && tx.source !== sourceFilter) {
         return false;
       }
@@ -736,6 +764,7 @@ export default function App() {
     transactions,
     statusFilter,
     typeFilter,
+    linkFilter,
     sourceFilter,
     startDate,
     endDate,
@@ -853,6 +882,73 @@ export default function App() {
     };
   }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
 
+  const unlinkedExpenseSummary = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const bySource = new Map<string, { source: string; count: number; totalCents: number }>();
+    const unlinkedTransactions: NormalizedTransaction[] = [];
+    let totalCount = 0;
+    let totalCents = 0;
+
+    for (const tx of transactions) {
+      if (statusFilter === 'ready') {
+        const eligible = tx.reviewStatus === 'ok' || tx.reviewStatus === 'kept-distinct';
+        if (!eligible || tx.syncStatus !== 'pending') continue;
+      } else if (statusFilter === 'review') {
+        if (tx.reviewStatus !== 'flagged-duplicate') continue;
+      } else if (statusFilter === 'discarded') {
+        if (tx.reviewStatus !== 'discarded') continue;
+      } else if (statusFilter === 'in-sheet') {
+        if (tx.syncStatus === 'pending') continue;
+      } else if (tx.reviewStatus === 'discarded') {
+        continue;
+      }
+
+      if (typeFilter !== 'all' && tx.transactionType !== typeFilter) continue;
+      if (tx.transactionType !== 'Expense') continue;
+      if (tx.targetId && tx.targetId.trim() !== '') continue;
+      if (startDate && tx.date < startDate) continue;
+      if (endDate && tx.date > endDate) continue;
+      if (q) {
+        const hay =
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+
+      const absCents = Math.abs(tx.amountCents);
+      const entry = bySource.get(tx.source) ?? {
+        source: tx.source,
+        count: 0,
+        totalCents: 0,
+      };
+      entry.count++;
+      entry.totalCents += absCents;
+      bySource.set(tx.source, entry);
+
+      unlinkedTransactions.push(tx);
+      totalCount++;
+      totalCents += absCents;
+    }
+
+    const items = Array.from(bySource.values())
+      .map((item) => ({
+        source: item.source,
+        count: item.count,
+        total: item.totalCents / 100,
+      }))
+      .sort((a, b) => {
+        if (b.total !== a.total) return b.total - a.total;
+        return a.source.localeCompare(b.source);
+      });
+
+    return {
+      items,
+      transactions: unlinkedTransactions,
+      totalCount,
+      totalAmount: totalCents / 100,
+      activeSourceCount: items.length,
+    };
+  }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
+
   const unmappedStatements = statements.filter((s) => s.mappingStatus === 'needs-mapping');
   const editingStatement = statements.find((s) => s.id === editingStatementId) ?? null;
   const sheetUrl = `https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}/edit`;
@@ -861,6 +957,7 @@ export default function App() {
     setSearchQuery('');
     setStatusFilter('all');
     setTypeFilter('all');
+    setLinkFilter('all');
     setSourceFilter('all');
     setStartDate('');
     setEndDate('');
@@ -902,6 +999,17 @@ export default function App() {
             }`}
           >
             Expense Ledger
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveModule('chatbot')}
+            className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
+              activeModule === 'chatbot'
+                ? 'text-slate-900 underline underline-offset-4'
+                : ''
+            }`}
+          >
+            AI Chatbot
           </button>
           {activeModule === 'statements' && (
             <button
@@ -966,6 +1074,14 @@ export default function App() {
           refreshNonce={expenseRefreshNonce}
           externalStatusMessage={reconcileMessage}
           onDismissExternalStatus={() => setReconcileMessage(null)}
+        />
+      ) : activeModule === 'chatbot' ? (
+        <ChatbotModule
+          needsAuth={needsAuth}
+          isLoggingIn={isLoggingIn}
+          onSignIn={handleSignIn}
+          onAuthExpired={() => setNeedsAuth(true)}
+          refreshNonce={expenseRefreshNonce}
         />
       ) : (
         <>
@@ -1235,6 +1351,17 @@ export default function App() {
                   Reconcile Expenses
                 </button>
 
+                {unlinkedExpenseSummary.totalCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleExportUnlinkedExpensesCsv}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                    Export Unlinked Expenses CSV
+                  </button>
+                )}
+
                 {transactions.length > 0 && (
                   <button
                     type="button"
@@ -1437,18 +1564,24 @@ export default function App() {
                           expense: 0,
                           net: 0,
                         };
-                        const isSelected = sourceFilter === sourceName;
+                        const isSelected =
+                          sourceFilter === sourceName && linkFilter !== 'unlinked-expenses';
                         const isEmpty = item.count === 0;
 
                         return (
                           <button
                             key={`${rowIndex}-${sourceName}`}
                             type="button"
-                            onClick={() =>
-                              setSourceFilter((prev) =>
-                                prev === sourceName ? 'all' : sourceName
-                              )
-                            }
+                            onClick={() => {
+                              if (sourceFilter === sourceName && linkFilter !== 'unlinked-expenses') {
+                                setSourceFilter('all');
+                              } else {
+                                setSourceFilter(sourceName);
+                                if (linkFilter === 'unlinked-expenses') {
+                                  setLinkFilter('all');
+                                }
+                              }
+                            }}
                             aria-pressed={isSelected}
                             className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
                               isSelected
@@ -1509,6 +1642,150 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </section>
+            )}
+
+            {/* Summary by Source (Unlinked Expenses) Cards */}
+            {transactions.length > 0 && (
+              <section
+                aria-label="Summary by Source (Unlinked Expenses)"
+                className="space-y-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <h2 className="font-semibold text-slate-900">
+                      Summary by Source (Unlinked Expenses)
+                    </h2>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono text-slate-500 tabular-nums">
+                      {unlinkedExpenseSummary.activeSourceCount}{' '}
+                      {unlinkedExpenseSummary.activeSourceCount === 1 ? 'source' : 'sources'}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono text-slate-700 tabular-nums">
+                      {unlinkedExpenseSummary.totalCount.toLocaleString()}{' '}
+                      {unlinkedExpenseSummary.totalCount === 1 ? 'txn' : 'txns'} ·{' '}
+                      {unlinkedExpenseSummary.totalAmount.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono text-slate-500 tabular-nums">
+                      {periodLabel}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    {unlinkedExpenseSummary.totalCount > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleExportUnlinkedExpensesCsv}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                        >
+                          <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                          Export Unlinked CSV
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (linkFilter === 'unlinked-expenses' && sourceFilter === 'all') {
+                              setLinkFilter('all');
+                            } else {
+                              setLinkFilter('unlinked-expenses');
+                              setSourceFilter('all');
+                            }
+                          }}
+                          className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
+                        >
+                          {linkFilter === 'unlinked-expenses' && sourceFilter === 'all'
+                            ? 'Show All Transactions'
+                            : 'Filter Table to Unlinked'}
+                        </button>
+                      </>
+                    )}
+                    {linkFilter === 'unlinked-expenses' && sourceFilter !== 'all' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLinkFilter('all');
+                          setSourceFilter('all');
+                        }}
+                        className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
+                      >
+                        Reset Unlinked Filter
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {unlinkedExpenseSummary.items.length === 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
+                    All expense transactions in this view are linked to the Expense Ledger.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {unlinkedExpenseSummary.items.map((item) => {
+                      const isSelected =
+                        linkFilter === 'unlinked-expenses' && sourceFilter === item.source;
+                      const sharePct =
+                        unlinkedExpenseSummary.totalAmount > 0
+                          ? (item.total / unlinkedExpenseSummary.totalAmount) * 100
+                          : 0;
+
+                      return (
+                        <button
+                          key={`unlinked-${item.source}`}
+                          type="button"
+                          onClick={() => {
+                            if (isSelected) {
+                              setLinkFilter('all');
+                              setSourceFilter('all');
+                            } else {
+                              setLinkFilter('unlinked-expenses');
+                              setSourceFilter(item.source);
+                            }
+                          }}
+                          aria-pressed={isSelected}
+                          className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
+                            isSelected
+                              ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
+                              : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-xs font-semibold text-slate-900">
+                              {item.source}
+                            </span>
+                            <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
+                              {item.count.toLocaleString()}{' '}
+                              {item.count === 1 ? 'txn' : 'txns'}
+                            </span>
+                          </div>
+
+                          <div className="mt-2 font-mono text-base font-semibold tracking-tight text-red-700 tabular-nums">
+                            {item.total.toLocaleString('en-US', {
+                              style: 'currency',
+                              currency: 'USD',
+                            })}
+                          </div>
+
+                          <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] text-slate-500 tabular-nums">
+                            <span>{sharePct.toFixed(1)}% of unlinked</span>
+                            <span>No Target ID</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </section>
             )}
 
@@ -1749,6 +2026,17 @@ export default function App() {
                     <option value="all">All Types</option>
                     <option value="Income">Income</option>
                     <option value="Expense">Expense</option>
+                  </select>
+
+                  <select
+                    value={linkFilter}
+                    onChange={(e) => setLinkFilter(e.target.value as LinkFilter)}
+                    aria-label="Filter by Expense Link Status"
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                  >
+                    <option value="all">All Link States</option>
+                    <option value="unlinked-expenses">Unlinked Expenses</option>
+                    <option value="linked-expenses">Linked Expenses</option>
                   </select>
 
                   <select

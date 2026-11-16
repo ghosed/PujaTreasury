@@ -73,6 +73,7 @@ const EMPTY_STAGED_SUMMARY: StagedExpenseBatchSummary = {
 };
 
 type OriginFilter = 'all' | 'sheet' | 'staged';
+type ExpenseLinkFilter = 'all' | 'unlinked' | 'linked';
 
 export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   needsAuth,
@@ -125,6 +126,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
 
   // Filters & Sort
   const [originFilter, setOriginFilter] = useState<OriginFilter>('all');
+  const [linkFilter, setLinkFilter] = useState<ExpenseLinkFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -589,6 +591,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     const matched = allRecords.filter((rec) => {
       if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') return false;
       if (originFilter === 'staged' && rec.sourceOrigin !== 'csv') return false;
+      if (linkFilter === 'unlinked' && rec.reconSourceId.trim() !== '') return false;
+      if (linkFilter === 'linked' && rec.reconSourceId.trim() === '') return false;
       if (
         categoryFilter !== 'all' &&
         rec.category.toLowerCase() !== categoryFilter.toLowerCase()
@@ -631,6 +635,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   }, [
     allRecords,
     originFilter,
+    linkFilter,
     categoryFilter,
     statusFilter,
     pujaFilter,
@@ -709,8 +714,78 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     searchQuery,
   ]);
 
-  const handleExportCsv = () => {
-    if (filteredRecords.length === 0) return;
+  const unlinkedCategorySummary = useMemo(() => {
+    const map = new Map<string, { category: string; count: number; totalCents: number }>();
+    const unlinkedRecords: ExpenseRecord[] = [];
+    const q = searchQuery.trim().toLowerCase();
+    let totalCount = 0;
+    let totalCents = 0;
+
+    for (const rec of allRecords) {
+      if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') continue;
+      if (originFilter === 'staged' && rec.sourceOrigin !== 'csv') continue;
+      if (rec.reconSourceId.trim() !== '') continue;
+      if (statusFilter !== 'all' && rec.status.toLowerCase() !== statusFilter.toLowerCase()) {
+        continue;
+      }
+      if (pujaFilter !== 'all' && rec.puja.toLowerCase() !== pujaFilter.toLowerCase()) continue;
+      if (
+        paymentModeFilter !== 'all' &&
+        rec.paymentMode.toLowerCase() !== paymentModeFilter.toLowerCase()
+      ) {
+        continue;
+      }
+      if (startDate && rec.date < startDate) continue;
+      if (endDate && rec.date > endDate) continue;
+      if (q) {
+        const hay =
+          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+
+      const cents = Math.round(rec.amount * 100);
+      const cat = rec.category || 'Uncategorized';
+      const entry = map.get(cat) ?? { category: cat, count: 0, totalCents: 0 };
+      entry.count++;
+      entry.totalCents += cents;
+      map.set(cat, entry);
+
+      unlinkedRecords.push(rec);
+      totalCount++;
+      totalCents += cents;
+    }
+
+    const items = Array.from(map.values())
+      .map((item) => ({
+        category: item.category,
+        count: item.count,
+        total: item.totalCents / 100,
+      }))
+      .sort((a, b) => {
+        if (b.total !== a.total) return b.total - a.total;
+        return a.category.localeCompare(b.category);
+      });
+
+    return {
+      items,
+      records: unlinkedRecords,
+      totalCount,
+      totalAmount: totalCents / 100,
+      activeCategoryCount: items.length,
+    };
+  }, [
+    allRecords,
+    originFilter,
+    statusFilter,
+    pujaFilter,
+    paymentModeFilter,
+    startDate,
+    endDate,
+    searchQuery,
+  ]);
+
+  const exportRecordsCsv = (rows: ExpenseRecord[], fileName: string) => {
+    if (rows.length === 0) return;
 
     const escapeCsv = (val: string | number) => {
       const s = String(val);
@@ -722,7 +797,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
 
     const lines = [
       CANONICAL_EXPENSE_HEADERS.join(','),
-      ...filteredRecords.map((rec) =>
+      ...rows.map((rec) =>
         [
           rec.expId,
           rec.date,
@@ -745,15 +820,32 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'expense-ledger-export.csv';
+    link.download = fileName;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
 
+  const handleExportCsv = () => {
+    exportRecordsCsv(filteredRecords, 'expense-ledger-export.csv');
+  };
+
+  const handleExportUnlinkedCsv = () => {
+    const sorted = [...unlinkedCategorySummary.records].sort((a, b) => {
+      const cmp =
+        dateSortOrder === 'desc'
+          ? b.date.localeCompare(a.date)
+          : a.date.localeCompare(b.date);
+      if (cmp !== 0) return cmp;
+      return b.expId.localeCompare(a.expId);
+    });
+    exportRecordsCsv(sorted, 'expense-ledger-unlinked-expenses.csv');
+  };
+
   const resetFilters = () => {
     setOriginFilter('all');
+    setLinkFilter('all');
     setSearchQuery('');
     setCategoryFilter('all');
     setStatusFilter('all');
@@ -1025,6 +1117,17 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 Add Expense
               </button>
 
+              {unlinkedCategorySummary.totalCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleExportUnlinkedCsv}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                >
+                  <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                  Export Unlinked Expenses CSV
+                </button>
+              )}
+
               {filteredRecords.length > 0 && (
                 <button
                   type="button"
@@ -1219,18 +1322,25 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {categorySummaries.map((item) => {
                   const isSelected =
-                    categoryFilter.toLowerCase() === item.category.toLowerCase();
+                    categoryFilter.toLowerCase() === item.category.toLowerCase() &&
+                    linkFilter !== 'unlinked';
                   return (
                     <button
                       key={item.category}
                       type="button"
-                      onClick={() =>
-                        setCategoryFilter((prev) =>
-                          prev.toLowerCase() === item.category.toLowerCase()
-                            ? 'all'
-                            : item.category
-                        )
-                      }
+                      onClick={() => {
+                        if (
+                          categoryFilter.toLowerCase() === item.category.toLowerCase() &&
+                          linkFilter !== 'unlinked'
+                        ) {
+                          setCategoryFilter('all');
+                        } else {
+                          setCategoryFilter(item.category);
+                          if (linkFilter === 'unlinked') {
+                            setLinkFilter('all');
+                          }
+                        }
+                      }}
                       aria-pressed={isSelected}
                       className={`rounded-lg border px-4 py-3 text-left transition-colors ${
                         isSelected
@@ -1257,6 +1367,151 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                   );
                 })}
               </div>
+            </section>
+          )}
+
+          {/* Summary by Category (Unlinked Expenses) Cards */}
+          {allRecords.length > 0 && (
+            <section
+              aria-label="Summary by Category (Unlinked Expenses)"
+              className="space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <h2 className="font-semibold text-slate-900">
+                    Summary by Category (Unlinked Expenses)
+                  </h2>
+                  <span aria-hidden="true" className="text-slate-300">
+                    ·
+                  </span>
+                  <span className="font-mono text-slate-500 tabular-nums">
+                    {unlinkedCategorySummary.activeCategoryCount}{' '}
+                    {unlinkedCategorySummary.activeCategoryCount === 1
+                      ? 'category'
+                      : 'categories'}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-300">
+                    ·
+                  </span>
+                  <span className="font-mono text-slate-700 tabular-nums">
+                    {unlinkedCategorySummary.totalCount.toLocaleString()}{' '}
+                    {unlinkedCategorySummary.totalCount === 1 ? 'item' : 'items'} ·{' '}
+                    {unlinkedCategorySummary.totalAmount.toLocaleString('en-US', {
+                      style: 'currency',
+                      currency: 'USD',
+                    })}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-300">
+                    ·
+                  </span>
+                  <span className="font-mono text-slate-500 tabular-nums">{periodLabel}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {unlinkedCategorySummary.totalCount > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleExportUnlinkedCsv}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                      >
+                        <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                        Export Unlinked CSV
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (linkFilter === 'unlinked' && categoryFilter === 'all') {
+                            setLinkFilter('all');
+                          } else {
+                            setLinkFilter('unlinked');
+                            setCategoryFilter('all');
+                          }
+                        }}
+                        className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
+                      >
+                        {linkFilter === 'unlinked' && categoryFilter === 'all'
+                          ? 'Show All Records'
+                          : 'Filter Table to Unlinked'}
+                      </button>
+                    </>
+                  )}
+                  {linkFilter === 'unlinked' && categoryFilter !== 'all' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkFilter('all');
+                        setCategoryFilter('all');
+                      }}
+                      className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
+                    >
+                      Reset Unlinked Filter
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {unlinkedCategorySummary.items.length === 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
+                  All expense records in this view are linked to the Bank Ledger.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {unlinkedCategorySummary.items.map((item) => {
+                    const isSelected =
+                      linkFilter === 'unlinked' &&
+                      categoryFilter.toLowerCase() === item.category.toLowerCase();
+                    const sharePct =
+                      unlinkedCategorySummary.totalAmount > 0
+                        ? (item.total / unlinkedCategorySummary.totalAmount) * 100
+                        : 0;
+
+                    return (
+                      <button
+                        key={`unlinked-${item.category}`}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) {
+                            setLinkFilter('all');
+                            setCategoryFilter('all');
+                          } else {
+                            setLinkFilter('unlinked');
+                            setCategoryFilter(item.category);
+                          }
+                        }}
+                        aria-pressed={isSelected}
+                        className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
+                          isSelected
+                            ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
+                            : 'border-slate-200 bg-white hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-semibold text-slate-900">
+                            {item.category}
+                          </span>
+                          <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
+                            {item.count.toLocaleString()}{' '}
+                            {item.count === 1 ? 'item' : 'items'}
+                          </span>
+                        </div>
+
+                        <div className="mt-2 font-mono text-base font-semibold tracking-tight text-red-700 tabular-nums">
+                          {item.total.toLocaleString('en-US', {
+                            style: 'currency',
+                            currency: 'USD',
+                          })}
+                        </div>
+
+                        <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] text-slate-500 tabular-nums">
+                          <span>{sharePct.toFixed(1)}% of unlinked</span>
+                          <span>No Recon Source_ID</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           )}
 
@@ -1418,6 +1673,17 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     className="w-52 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                   />
                 </div>
+
+                <select
+                  value={linkFilter}
+                  onChange={(e) => setLinkFilter(e.target.value as ExpenseLinkFilter)}
+                  aria-label="Filter by Bank Link Status"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                >
+                  <option value="all">All Link States</option>
+                  <option value="unlinked">Unlinked to Bank</option>
+                  <option value="linked">Linked to Bank</option>
+                </select>
 
                 <select
                   value={categoryFilter}

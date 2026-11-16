@@ -48,7 +48,10 @@ import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { ColumnMappingModal } from './components/ColumnMappingModal';
 import { SyncConfirmModal } from './components/SyncConfirmModal';
 import { TransactionGrid } from './components/TransactionGrid';
+import { ExpenseModule } from './components/expense/ExpenseModule';
+import { EXPENSE_SPREADSHEET_ID } from './services/expenseSheets';
 
+type ActiveModule = 'statements' | 'expenses';
 type StatusFilter = 'all' | 'ready' | 'review' | 'discarded' | 'in-sheet';
 type TypeFilter = 'all' | 'Income' | 'Expense';
 
@@ -76,6 +79,9 @@ const CONFIGURED_SOURCE_SET = new Set(SOURCE_CARD_ROWS.flat());
 
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Active Workspace Module
+  const [activeModule, setActiveModule] = useState<ActiveModule>('statements');
 
   // Auth state (token strictly cached in memory inside firebaseAuth.ts)
   const [user, setUser] = useState<User | null>(null);
@@ -846,31 +852,53 @@ export default function App() {
           LedgerSync
         </a>
 
-        <nav className="hidden items-center gap-6 text-sm font-medium text-slate-600 md:flex">
+        <nav className="flex items-center gap-5 overflow-x-auto text-sm font-medium text-slate-600">
           <button
             type="button"
-            onClick={() => setStatusFilter('all')}
+            onClick={() => {
+              setActiveModule('statements');
+              setStatusFilter('all');
+            }}
             className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
-              statusFilter !== 'review' ? 'text-slate-900 underline underline-offset-4' : ''
+              activeModule === 'statements' && statusFilter !== 'review'
+                ? 'text-slate-900 underline underline-offset-4'
+                : ''
             }`}
           >
-            Ledger Preview
+            Bank Statements
           </button>
           <button
             type="button"
-            onClick={() => setStatusFilter('review')}
+            onClick={() => setActiveModule('expenses')}
             className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
-              statusFilter === 'review' ? 'text-slate-900 underline underline-offset-4' : ''
+              activeModule === 'expenses'
+                ? 'text-slate-900 underline underline-offset-4'
+                : ''
             }`}
           >
-            Review Queue
-            {summary.flaggedForReview > 0 ? ` (${summary.flaggedForReview})` : ''}
+            Expense Ledger
           </button>
+          {activeModule === 'statements' && (
+            <button
+              type="button"
+              onClick={() => setStatusFilter('review')}
+              className={`hidden transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 sm:inline ${
+                statusFilter === 'review' ? 'text-slate-900 underline underline-offset-4' : ''
+              }`}
+            >
+              Review Queue
+              {summary.flaggedForReview > 0 ? ` (${summary.flaggedForReview})` : ''}
+            </button>
+          )}
           <a
-            href={sheetUrl}
+            href={
+              activeModule === 'expenses'
+                ? `https://docs.google.com/spreadsheets/d/${EXPENSE_SPREADSHEET_ID}/edit`
+                : sheetUrl
+            }
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 hover:text-slate-900"
+            className="hidden items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 md:inline-flex"
           >
             Target Sheet
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
@@ -903,7 +931,16 @@ export default function App() {
       </header>
 
       {/* Main Workspace Canvas */}
-      <div className="flex flex-1 flex-col lg:flex-row">
+      {activeModule === 'expenses' ? (
+        <ExpenseModule
+          needsAuth={needsAuth}
+          isLoggingIn={isLoggingIn}
+          onSignIn={handleSignIn}
+          onAuthExpired={() => setNeedsAuth(true)}
+        />
+      ) : (
+        <>
+          <div className="flex flex-1 flex-col lg:flex-row">
         {/* Configuration Sidebar */}
         <aside className="w-full shrink-0 border-b border-slate-200 bg-white p-5 lg:w-[290px] lg:border-r lg:border-b-0">
           <div className="space-y-6">
@@ -1695,6 +1732,8 @@ export default function App() {
           setStatusFilter('review');
         }}
       />
+        </>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 {
   "name": "LedgerSync — Bank Statement Processor",
-  "description": "Process multi-file bank statement CSVs, resolve same-day duplicates, categorize transactions, and incrementally sync to Google Sheets.",
+  "description": "Process multi-file bank statement CSVs, resolve duplicates, categorize transactions, and incrementally sync to Google Sheets.\nProcess expense ledgers.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

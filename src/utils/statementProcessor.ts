@@ -297,13 +297,14 @@ export async function processStatements(
       }
       seenGlobalOccurrenceKeys.add(globalOccurrenceKey);
 
+      const uniqueId = await sha256Hex16(`${baseIdentity}|${occurrenceIndex}`);
+
       let reviewStatus: NormalizedTransaction['reviewStatus'] = 'ok';
-      if (occurrenceIndex > 1) {
+      if (occurrenceIndex > 1 && !existingSheetIds.has(uniqueId) && !syncedIds.has(uniqueId)) {
         const decision = resolutions[globalOccurrenceKey];
         reviewStatus = decision ?? 'flagged-duplicate';
       }
 
-      const uniqueId = await sha256Hex16(`${baseIdentity}|${occurrenceIndex}`);
       const transactionType: TransactionType = amount >= 0 ? 'Income' : 'Expense';
       const referenceNumber = extractReferenceNumber(rawDesc, normalizedCheck);
       const source = categorizeSource(rawDesc);

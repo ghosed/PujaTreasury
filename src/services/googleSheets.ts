@@ -3,7 +3,13 @@ import {
   NormalizedTransaction,
   SyncPlan,
   SyncResult,
+  TransactionType,
 } from '../types/statement';
+import {
+  categorizeSource,
+  normalizeDate,
+  parseSignedAmount,
+} from '../utils/statementProcessor';
 
 export const TARGET_SPREADSHEET_ID = '14lgrbcSnwPGu1nJei2_ndru9Qp0HzQwNR4mhUX6xY7s';
 
@@ -64,6 +70,120 @@ async function sheetsFetch<T>(
   }
 
   return (await res.json()) as T;
+}
+
+export interface LoadedSheetLedger {
+  spreadsheetTitle: string;
+  tabExists: boolean;
+  transactions: NormalizedTransaction[];
+  existingIds: Set<string>;
+}
+
+export async function fetchSheetLedger(
+  accessToken: string,
+  spreadsheetId: string,
+  tabName: AccountType
+): Promise<LoadedSheetLedger> {
+  const meta = await sheetsFetch<SpreadsheetMetadata>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}?fields=properties.title,sheets.properties`,
+    accessToken
+  );
+
+  const spreadsheetTitle = meta.properties?.title || 'Bank Statements';
+  const existingTabs = meta.sheets?.map((s) => s.properties?.title).filter(Boolean) ?? [];
+  const tabExists = existingTabs.includes(tabName);
+
+  const existingIds = new Set<string>();
+  const transactions: NormalizedTransaction[] = [];
+
+  if (!tabExists) {
+    return { spreadsheetTitle, tabExists: false, transactions, existingIds };
+  }
+
+  const range = encodeURIComponent(`${tabName}!A:G`);
+  const valuesResp = await sheetsFetch<{ values?: Array<Array<string | number>> }>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/${range}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`,
+    accessToken
+  );
+
+  const rows = valuesResp.values ?? [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.every((cell) => String(cell ?? '').trim() === '')) {
+      continue;
+    }
+
+    const col0 = String(row[0] ?? '').trim();
+    const col1 = String(row[1] ?? '').trim();
+
+    if (
+      i === 0 &&
+      (col0.toLowerCase() === 'unique transaction id' ||
+        col0.toLowerCase() === 'unique_transaction_id' ||
+        col1.toLowerCase() === 'date')
+    ) {
+      continue;
+    }
+
+    const normalizedDate = normalizeDate(col1) || col1;
+    const rawAmount = row[2];
+    let amount: number | null = null;
+    if (typeof rawAmount === 'number' && Number.isFinite(rawAmount)) {
+      amount = rawAmount;
+    } else if (rawAmount !== undefined && rawAmount !== null) {
+      amount = parseSignedAmount(String(rawAmount));
+    }
+
+    if (!normalizedDate || amount === null) {
+      continue;
+    }
+
+    const rawType = String(row[3] ?? '').trim();
+    const transactionType: TransactionType =
+      rawType === 'Income' || rawType === 'Expense'
+        ? rawType
+        : amount >= 0
+          ? 'Income'
+          : 'Expense';
+
+    const description = String(row[4] ?? '').trim();
+    const referenceNumber = String(row[5] ?? '').trim();
+    const rawSource = String(row[6] ?? '').trim();
+    const source = rawSource || categorizeSource(description);
+    const uniqueId = col0 || `SHEET-${tabName.toUpperCase()}-${i + 1}`;
+
+    if (col0) {
+      existingIds.add(col0);
+    }
+
+    transactions.push({
+      rowKey: `sheet-${tabName}-${i}-${uniqueId}`,
+      flagKey: uniqueId,
+      uniqueId,
+      date: normalizedDate,
+      amount,
+      amountCents: Math.round(amount * 100),
+      transactionType,
+      description,
+      referenceNumber,
+      source,
+      sourceFile: `Google Sheet (${tabName})`,
+      occurrenceIndex: 1,
+      reviewStatus: 'ok',
+      syncStatus: 'already-in-sheet',
+    });
+  }
+
+  return {
+    spreadsheetTitle,
+    tabExists: true,
+    transactions,
+    existingIds,
+  };
 }
 
 export async function prepareSyncPlan(

@@ -38,6 +38,7 @@ import {
 } from './services/firebaseAuth';
 import {
   executeSyncPlan,
+  fetchSheetLedger,
   prepareSyncPlan,
   SHEET_HEADERS,
   SheetsApiError,
@@ -103,10 +104,25 @@ export default function App() {
     Puja: new Set(),
     Regular: new Set(),
   });
+  const [sheetTransactionsByAccount, setSheetTransactionsByAccount] = useState<
+    Record<AccountType, NormalizedTransaction[]>
+  >({
+    Puja: [],
+    Regular: [],
+  });
+  const [loadedAccounts, setLoadedAccounts] = useState<Record<AccountType, boolean>>({
+    Puja: false,
+    Regular: false,
+  });
+  const inFlightAccountsRef = useRef<Record<AccountType, boolean>>({
+    Puja: false,
+    Regular: false,
+  });
 
-  const [transactions, setTransactions] = useState<NormalizedTransaction[]>([]);
+  const [csvTransactions, setCsvTransactions] = useState<NormalizedTransaction[]>([]);
   const [summary, setSummary] = useState<PipelineSummary>(EMPTY_SUMMARY);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isLoadingSheet, setIsLoadingSheet] = useState(false);
 
   // Filters & Sort
   const [searchQuery, setSearchQuery] = useState('');
@@ -124,6 +140,53 @@ export default function App() {
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const loadSheetLedger = useCallback(
+    async (targetAccount: AccountType, explicitToken?: string) => {
+      if (inFlightAccountsRef.current[targetAccount]) return;
+
+      const token = explicitToken ?? (await getAccessToken());
+      if (!token) {
+        setNeedsAuth(true);
+        return;
+      }
+
+      inFlightAccountsRef.current[targetAccount] = true;
+      setIsLoadingSheet(true);
+      setErrorMessage(null);
+      try {
+        const loaded = await fetchSheetLedger(token, TARGET_SPREADSHEET_ID, targetAccount);
+        setSheetTransactionsByAccount((prev) => ({
+          ...prev,
+          [targetAccount]: loaded.transactions,
+        }));
+        setExistingIdsByAccount((prev) => ({
+          ...prev,
+          [targetAccount]: loaded.existingIds,
+        }));
+        setLoadedAccounts((prev) => ({
+          ...prev,
+          [targetAccount]: true,
+        }));
+      } catch (err) {
+        if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
+          clearCachedToken();
+          setNeedsAuth(true);
+          setErrorMessage(
+            'Your Google session expired or lacks permission for this spreadsheet. Please sign in with Google again.'
+          );
+        } else {
+          setErrorMessage(
+            err instanceof Error ? err.message : 'Unable to read target Google Sheet.'
+          );
+        }
+      } finally {
+        inFlightAccountsRef.current[targetAccount] = false;
+        setIsLoadingSheet(false);
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     const unsubscribe = initAuth(
       (authedUser) => {
@@ -138,12 +201,19 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Automatically load the selected account tab from Google Sheets once authenticated
+  useEffect(() => {
+    if (!needsAuth && !loadedAccounts[account]) {
+      void loadSheetLedger(account);
+    }
+  }, [account, needsAuth, loadedAccounts, loadSheetLedger]);
+
   // Re-run normalization & SHA-256 ID pipeline whenever statements, account, or resolutions change
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (statements.length === 0) {
-        setTransactions([]);
+        setCsvTransactions([]);
         setSummary(EMPTY_SUMMARY);
         return;
       }
@@ -156,7 +226,7 @@ export default function App() {
           existingIdsByAccount[account]
         );
         if (!cancelled) {
-          setTransactions(result.transactions);
+          setCsvTransactions(result.transactions);
           setSummary(result.summary);
         }
       } finally {
@@ -171,6 +241,47 @@ export default function App() {
     };
   }, [statements, resolutions, account, newlySyncedIdsByAccount, existingIdsByAccount]);
 
+  const transactions = useMemo<NormalizedTransaction[]>(() => {
+    const sheetRows = sheetTransactionsByAccount[account];
+    const newlySyncedSet = newlySyncedIdsByAccount[account];
+
+    if (csvTransactions.length === 0) {
+      return sheetRows.map((tx) =>
+        newlySyncedSet.has(tx.uniqueId) ? { ...tx, syncStatus: 'newly-synced' as const } : tx
+      );
+    }
+
+    const sheetIdSet = new Set(sheetRows.map((tx) => tx.uniqueId));
+    const merged: NormalizedTransaction[] = sheetRows.map((tx) =>
+      newlySyncedSet.has(tx.uniqueId) ? { ...tx, syncStatus: 'newly-synced' as const } : tx
+    );
+
+    for (const csvTx of csvTransactions) {
+      if (!sheetIdSet.has(csvTx.uniqueId)) {
+        merged.push(csvTx);
+      }
+    }
+
+    return merged;
+  }, [csvTransactions, sheetTransactionsByAccount, newlySyncedIdsByAccount, account]);
+
+  const { alreadyInSheetDisplayCount, newlySyncedDisplayCount } = useMemo(() => {
+    let alreadyInSheet = 0;
+    let newlySynced = 0;
+    for (const tx of transactions) {
+      if (tx.reviewStatus === 'discarded') continue;
+      if (tx.syncStatus === 'newly-synced') {
+        newlySynced++;
+      } else if (tx.syncStatus === 'already-in-sheet') {
+        alreadyInSheet++;
+      }
+    }
+    return {
+      alreadyInSheetDisplayCount: alreadyInSheet,
+      newlySyncedDisplayCount: newlySynced,
+    };
+  }, [transactions]);
+
   const handleSignIn = async () => {
     setIsLoggingIn(true);
     setErrorMessage(null);
@@ -179,6 +290,7 @@ export default function App() {
       if (res) {
         setUser(res.user);
         setNeedsAuth(false);
+        await loadSheetLedger(account, res.accessToken);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Google sign-in failed.';
@@ -193,6 +305,12 @@ export default function App() {
     setUser(null);
     setNeedsAuth(true);
     setPendingSyncPlan(null);
+    setSheetTransactionsByAccount({ Puja: [], Regular: [] });
+    setLoadedAccounts({ Puja: false, Regular: false });
+    setExistingIdsByAccount({ Puja: new Set(), Regular: new Set() });
+    setNewlySyncedIdsByAccount({ Puja: new Set(), Regular: new Set() });
+    setSyncResult(null);
+    setErrorMessage(null);
   };
 
   const ingestFiles = useCallback(async (fileList: FileList | File[]) => {
@@ -288,7 +406,7 @@ export default function App() {
   const handleBulkResolveFlagged = (decision: 'kept-distinct' | 'discarded') => {
     setResolutions((prev) => {
       const next = { ...prev };
-      for (const tx of transactions) {
+      for (const tx of csvTransactions) {
         if (tx.reviewStatus === 'flagged-duplicate') {
           next[tx.flagKey] = decision;
         }
@@ -297,42 +415,15 @@ export default function App() {
     });
   };
 
-  const handleCheckExistingIds = async () => {
+  const handleRefreshSheetLedger = async () => {
     setErrorMessage(null);
     const token = await getAccessToken();
     if (!token) {
       setNeedsAuth(true);
-      setErrorMessage('Please sign in with Google to check existing Google Sheet records.');
+      setErrorMessage('Please sign in with Google to load existing Google Sheet records.');
       return;
     }
-
-    setIsPreparingSync(true);
-    try {
-      const { existingIds } = await prepareSyncPlan(
-        token,
-        TARGET_SPREADSHEET_ID,
-        account,
-        transactions
-      );
-      setExistingIdsByAccount((prev) => ({
-        ...prev,
-        [account]: existingIds,
-      }));
-    } catch (err) {
-      if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
-        clearCachedToken();
-        setNeedsAuth(true);
-        setErrorMessage(
-          'Your Google session expired or lacks permission for this spreadsheet. Please sign in with Google again.'
-        );
-      } else {
-        setErrorMessage(
-          err instanceof Error ? err.message : 'Unable to read target Google Sheet.'
-        );
-      }
-    } finally {
-      setIsPreparingSync(false);
-    }
+    await loadSheetLedger(account, token);
   };
 
   const handleStartSync = async () => {
@@ -366,7 +457,7 @@ export default function App() {
         token,
         TARGET_SPREADSHEET_ID,
         account,
-        transactions
+        csvTransactions
       );
       setExistingIdsByAccount((prev) => ({
         ...prev,
@@ -404,7 +495,8 @@ export default function App() {
     setErrorMessage(null);
     try {
       const result = await executeSyncPlan(token, pendingSyncPlan);
-      const appendedIds = pendingSyncPlan.toAppend.map((tx) => tx.uniqueId);
+      const appendedRows = pendingSyncPlan.toAppend;
+      const appendedIds = appendedRows.map((tx) => tx.uniqueId);
 
       setNewlySyncedIdsByAccount((prev) => {
         const nextSet = new Set(prev[account]);
@@ -416,6 +508,27 @@ export default function App() {
         appendedIds.forEach((id) => nextSet.add(id));
         return { ...prev, [account]: nextSet };
       });
+      setSheetTransactionsByAccount((prev) => {
+        const current = prev[account];
+        const existingIdSet = new Set(current.map((tx) => tx.uniqueId));
+        const newSheetEntries: NormalizedTransaction[] = appendedRows
+          .filter((tx) => !existingIdSet.has(tx.uniqueId))
+          .map((tx) => ({
+            ...tx,
+            rowKey: `sheet-${account}-synced-${tx.uniqueId}`,
+            sourceFile: `Google Sheet (${account})`,
+            reviewStatus: 'ok',
+            syncStatus: 'newly-synced',
+          }));
+        return {
+          ...prev,
+          [account]: [...current, ...newSheetEntries],
+        };
+      });
+      setLoadedAccounts((prev) => ({
+        ...prev,
+        [account]: true,
+      }));
 
       setSyncResult(result);
       setPendingSyncPlan(null);
@@ -967,8 +1080,8 @@ export default function App() {
                 03. Sync Pipeline
               </h2>
               <p className="mt-1 text-xs text-slate-500">
-                Checks existing Unique IDs in &ldquo;{account}&rdquo; before appending new
-                records.
+                Loads existing ledger rows from &ldquo;{account}&rdquo; and appends deduplicated
+                transactions when statements are uploaded.
               </p>
 
               <div className="mt-3 space-y-2">
@@ -976,7 +1089,11 @@ export default function App() {
                   type="button"
                   onClick={handleStartSync}
                   disabled={
-                    statements.length === 0 || isPreparingSync || isSyncing || isProcessing
+                    statements.length === 0 ||
+                    isPreparingSync ||
+                    isSyncing ||
+                    isProcessing ||
+                    isLoadingSheet
                   }
                   className="flex w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 py-2.5 text-xs font-medium text-white transition-colors hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 whitespace-nowrap"
                 >
@@ -988,21 +1105,22 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={handleCheckExistingIds}
-                  disabled={
-                    statements.length === 0 || needsAuth || isPreparingSync || isSyncing
-                  }
+                  onClick={handleRefreshSheetLedger}
+                  disabled={needsAuth || isLoadingSheet || isPreparingSync || isSyncing}
                   className="flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
                 >
-                  <RefreshCw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  Check Existing Sheet IDs
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 shrink-0 ${isLoadingSheet ? 'animate-spin' : ''}`}
+                    aria-hidden="true"
+                  />
+                  {isLoadingSheet ? 'Loading Sheet Ledger...' : 'Refresh Ledger from Sheet'}
                 </button>
               </div>
 
               {needsAuth && (
                 <p className="mt-2.5 text-[11px] leading-relaxed text-slate-500">
-                  Sign in with Google from the header to enable reading and syncing to your
-                  Google Sheet.
+                  Sign in with Google from the header to load your Google Sheet ledger and enable
+                  syncing.
                 </p>
               )}
             </section>
@@ -1336,13 +1454,13 @@ export default function App() {
               <div className="px-4 py-3">
                 <div className="text-xs text-slate-500">Already in Sheet</div>
                 <div className="mt-1 font-mono text-lg font-semibold text-slate-700 tabular-nums">
-                  {summary.alreadyInSheet.toLocaleString()}
+                  {alreadyInSheetDisplayCount.toLocaleString()}
                 </div>
               </div>
               <div className="px-4 py-3">
                 <div className="text-xs text-slate-500">Newly Synced</div>
                 <div className="mt-1 font-mono text-lg font-semibold text-emerald-700 tabular-nums">
-                  {summary.newlySynced.toLocaleString()}
+                  {newlySyncedDisplayCount.toLocaleString()}
                 </div>
               </div>
             </div>
@@ -1477,7 +1595,7 @@ export default function App() {
                       { id: 'discarded', label: `Discarded (${summary.discarded})` },
                       {
                         id: 'in-sheet',
-                        label: `In Sheet (${summary.alreadyInSheet + summary.newlySynced})`,
+                        label: `In Sheet (${alreadyInSheetDisplayCount + newlySyncedDisplayCount})`,
                       },
                     ] as Array<{ id: StatusFilter; label: string }>
                   ).map((tab) => (
@@ -1541,8 +1659,12 @@ export default function App() {
               <TransactionGrid
                 transactions={filteredTransactions}
                 hasUploadedFiles={statements.length > 0}
-                isProcessing={isProcessing}
+                isProcessing={isProcessing || isLoadingSheet}
+                needsAuth={needsAuth}
+                isLoggingIn={isLoggingIn}
+                account={account}
                 dateSortOrder={dateSortOrder}
+                onSignIn={handleSignIn}
                 onToggleDateSort={() =>
                   setDateSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
                 }

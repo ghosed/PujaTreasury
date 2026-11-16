@@ -8,13 +8,18 @@ import {
   RotateCcw,
   Trash2,
 } from 'lucide-react';
-import { NormalizedTransaction } from '../types/statement';
+import { NormalizedTransaction, AccountType } from '../types/statement';
+import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface TransactionGridProps {
   transactions: NormalizedTransaction[];
   hasUploadedFiles: boolean;
   isProcessing: boolean;
+  needsAuth: boolean;
+  isLoggingIn: boolean;
+  account: AccountType;
   dateSortOrder: 'desc' | 'asc';
+  onSignIn: () => void;
   onToggleDateSort: () => void;
   onResolveFlag: (flagKey: string, decision: 'kept-distinct' | 'discarded' | 'reset') => void;
   onTriggerUpload: () => void;
@@ -25,7 +30,11 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
   transactions,
   hasUploadedFiles,
   isProcessing,
+  needsAuth,
+  isLoggingIn,
+  account,
   dateSortOrder,
+  onSignIn,
   onToggleDateSort,
   onResolveFlag,
   onTriggerUpload,
@@ -49,27 +58,56 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
     );
   }
 
-  if (!hasUploadedFiles) {
+  if (!hasUploadedFiles && transactions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
         <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600">
           <FileUp className="h-5 w-5" aria-hidden="true" />
         </div>
-        <h3 className="mt-4 text-sm font-semibold text-slate-900">
-          No bank statement CSVs loaded
-        </h3>
-        <p className="mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
-          Upload one or more CSV statements from the sidebar. The processor automatically
-          detects columns, removes cross-file overlap duplicates, extracts reference numbers
-          and sources, and flags same-day identical entries for review.
-        </p>
-        <button
-          type="button"
-          onClick={onTriggerUpload}
-          className="mt-5 rounded-md bg-teal-700 px-4 py-2 text-xs font-medium text-white hover:bg-teal-800 whitespace-nowrap"
-        >
-          Upload Statement CSVs
-        </button>
+        {needsAuth ? (
+          <>
+            <h3 className="mt-4 text-sm font-semibold text-slate-900">
+              Sign in to load your &ldquo;{account}&rdquo; Google Sheet ledger
+            </h3>
+            <p className="mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
+              Connect your Google account to automatically load existing transactions from the{' '}
+              <strong>{account}</strong> tab, or upload bank statement CSV files from the
+              sidebar to prepare a sync.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+              <GoogleSignInButton
+                onClick={onSignIn}
+                isLoading={isLoggingIn}
+                label="Sign in with Google"
+              />
+              <button
+                type="button"
+                onClick={onTriggerUpload}
+                className="rounded-md border border-slate-300 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+              >
+                Upload Statement CSVs
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h3 className="mt-4 text-sm font-semibold text-slate-900">
+              No transactions found in &ldquo;{account}&rdquo; tab
+            </h3>
+            <p className="mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
+              Upload one or more CSV bank statements from the sidebar. The processor detects
+              columns, removes cross-file duplicates, categorizes sources, and syncs new
+              entries to Google Sheets.
+            </p>
+            <button
+              type="button"
+              onClick={onTriggerUpload}
+              className="mt-5 rounded-md bg-teal-700 px-4 py-2 text-xs font-medium text-white hover:bg-teal-800 whitespace-nowrap"
+            >
+              Upload Statement CSVs
+            </button>
+          </>
+        )}
       </div>
     );
   }

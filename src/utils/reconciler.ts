@@ -14,6 +14,11 @@ export interface ReconciliationMatch {
   dateDiffDays: number;
   score: number;
   reason: string;
+  needsBankTargetIdUpdate: boolean;
+  needsBankIsReconUpdate: boolean;
+  needsBankCategoryUpdate: boolean;
+  needsExpenseReconIdUpdate: boolean;
+  needsExpenseIsReconUpdate: boolean;
   needsBankUpdate: boolean;
   needsExpenseUpdate: boolean;
 }
@@ -195,7 +200,69 @@ export function findExpenseMatches(
     expById.set(idNorm, arr);
   }
 
-  // Pass 1: Detect already-linked pairs (both fully linked & half-linked requiring backfill)
+  // Pass 1: Detect already-linked pairs (both fully synced & pairs needing backfill of ID, Is_Recon, or Category)
+  const evaluateLinkedPair = (
+    bankEntry: BankLedgerEntry,
+    matchedExp: ExpenseRecord,
+    bk: string,
+    ek: string,
+    defaultReason: string
+  ) => {
+    const bankTarget = bankEntry.tx.targetId?.trim() ?? '';
+    const expReconId = matchedExp.reconSourceId.trim();
+
+    const needsBankTargetIdUpdate =
+      bankTarget.toLowerCase() !== matchedExp.expId.trim().toLowerCase();
+    const needsBankIsReconUpdate = bankEntry.tx.isRecon !== 'Yes';
+    const expCat = matchedExp.category.trim();
+    const needsBankCategoryUpdate =
+      Boolean(expCat) && (bankEntry.tx.category ?? '').trim() !== expCat;
+
+    const needsExpenseReconIdUpdate =
+      expReconId.toLowerCase() !== bankEntry.tx.uniqueId.trim().toLowerCase();
+    const needsExpenseIsReconUpdate = matchedExp.isRecon !== 'Yes';
+
+    const needsBankUpdate =
+      needsBankTargetIdUpdate || needsBankIsReconUpdate || needsBankCategoryUpdate;
+    const needsExpenseUpdate =
+      needsExpenseReconIdUpdate || needsExpenseIsReconUpdate;
+
+    if (!needsBankUpdate && !needsExpenseUpdate) {
+      alreadyReconciledCount++;
+      return;
+    }
+
+    const bankDays = parseIsoDateToUtcDays(bankEntry.tx.date);
+    const expDays = parseIsoDateToUtcDays(matchedExp.date);
+    const diff =
+      bankDays !== null && expDays !== null ? Math.abs(bankDays - expDays) : 0;
+
+    const reasonParts: string[] = [defaultReason];
+    if (needsBankIsReconUpdate || needsExpenseIsReconUpdate) {
+      reasonParts.push('Set Is_Recon = Yes');
+    }
+    if (needsBankCategoryUpdate) {
+      reasonParts.push(`Copy Category "${expCat}"`);
+    }
+
+    matches.push({
+      matchKey: `${bk}<->${ek}`,
+      bankTab: bankEntry.tab,
+      bankTx: bankEntry.tx,
+      expense: matchedExp,
+      dateDiffDays: diff,
+      score: 1000,
+      reason: reasonParts.join(' · '),
+      needsBankTargetIdUpdate,
+      needsBankIsReconUpdate,
+      needsBankCategoryUpdate,
+      needsExpenseReconIdUpdate,
+      needsExpenseIsReconUpdate,
+      needsBankUpdate,
+      needsExpenseUpdate,
+    });
+  };
+
   for (const entry of validBankExpenses) {
     const bk = bankKey(entry);
     if (usedBankKeys.has(bk)) continue;
@@ -211,26 +278,15 @@ export function findExpenseMatches(
     usedBankKeys.add(bk);
     usedExpKeys.add(ek);
 
-    const reconId = matchedExp.reconSourceId.trim();
-    if (reconId.toLowerCase() === entry.tx.uniqueId.trim().toLowerCase()) {
-      alreadyReconciledCount++;
-    } else {
-      const bankDays = parseIsoDateToUtcDays(entry.tx.date);
-      const expDays = parseIsoDateToUtcDays(matchedExp.date);
-      const diff =
-        bankDays !== null && expDays !== null ? Math.abs(bankDays - expDays) : 0;
-      matches.push({
-        matchKey: `${bk}<->${ek}`,
-        bankTab: entry.tab,
-        bankTx: entry.tx,
-        expense: matchedExp,
-        dateDiffDays: diff,
-        score: 1000,
-        reason: 'Target ID linked · Backfill Recon Source_ID',
-        needsBankUpdate: false,
-        needsExpenseUpdate: true,
-      });
-    }
+    const reconMatches =
+      matchedExp.reconSourceId.trim().toLowerCase() === entry.tx.uniqueId.trim().toLowerCase();
+    evaluateLinkedPair(
+      entry,
+      matchedExp,
+      bk,
+      ek,
+      reconMatches ? 'Linked pair' : 'Target ID linked · Backfill Recon Source_ID'
+    );
   }
 
   for (const exp of validExpenses) {
@@ -248,26 +304,15 @@ export function findExpenseMatches(
     usedBankKeys.add(bk);
     usedExpKeys.add(ek);
 
-    const bankTarget = matchedBank.tx.targetId?.trim() ?? '';
-    if (bankTarget.toLowerCase() === exp.expId.trim().toLowerCase()) {
-      alreadyReconciledCount++;
-    } else {
-      const bankDays = parseIsoDateToUtcDays(matchedBank.tx.date);
-      const expDays = parseIsoDateToUtcDays(exp.date);
-      const diff =
-        bankDays !== null && expDays !== null ? Math.abs(bankDays - expDays) : 0;
-      matches.push({
-        matchKey: `${bk}<->${ek}`,
-        bankTab: matchedBank.tab,
-        bankTx: matchedBank.tx,
-        expense: exp,
-        dateDiffDays: diff,
-        score: 1000,
-        reason: 'Recon Source_ID linked · Backfill Target ID',
-        needsBankUpdate: true,
-        needsExpenseUpdate: false,
-      });
-    }
+    const targetMatches =
+      (matchedBank.tx.targetId?.trim() ?? '').toLowerCase() === exp.expId.trim().toLowerCase();
+    evaluateLinkedPair(
+      matchedBank,
+      exp,
+      bk,
+      ek,
+      targetMatches ? 'Linked pair' : 'Recon Source_ID linked · Backfill Target ID'
+    );
   }
 
   // Pass 2: Match unlinked Bank Expenses vs unlinked Expense Ledger records by exact amount & date window
@@ -343,6 +388,12 @@ export function findExpenseMatches(
     usedBankKeys.add(bk);
     usedExpKeys.add(ek);
 
+    const expCat = pair.expense.category.trim();
+    const needsBankCategoryUpdate =
+      Boolean(expCat) && (pair.bankEntry.tx.category ?? '').trim() !== expCat;
+    const needsBankIsReconUpdate = pair.bankEntry.tx.isRecon !== 'Yes';
+    const needsExpenseIsReconUpdate = pair.expense.isRecon !== 'Yes';
+
     matches.push({
       matchKey: `${bk}<->${ek}`,
       bankTab: pair.bankEntry.tab,
@@ -351,6 +402,11 @@ export function findExpenseMatches(
       dateDiffDays: pair.dateDiffDays,
       score: pair.score,
       reason: pair.reason,
+      needsBankTargetIdUpdate: true,
+      needsBankIsReconUpdate,
+      needsBankCategoryUpdate,
+      needsExpenseReconIdUpdate: true,
+      needsExpenseIsReconUpdate,
       needsBankUpdate: true,
       needsExpenseUpdate: true,
     });
@@ -387,3 +443,140 @@ export function findExpenseMatches(
     unmatchedExpenseAmount: unmatchedExpenseCents / 100,
   };
 }
+
+export interface LinkedBankFieldPatch {
+  sheetRowNumber: number;
+  targetId?: string;
+  isRecon?: 'Yes' | 'No';
+  category?: string;
+}
+
+export interface LinkedExpenseFieldPatch {
+  sheetRowNumber: number;
+  reconSourceId?: string;
+  isRecon?: 'Yes' | 'No';
+}
+
+export interface LinkedSyncPlan {
+  linkedPairCount: number;
+  bankUpdatesByTab: Record<AccountType, LinkedBankFieldPatch[]>;
+  expenseUpdates: LinkedExpenseFieldPatch[];
+}
+
+export function findLinkedSyncUpdates(
+  bankEntries: BankLedgerEntry[],
+  expenses: ExpenseRecord[]
+): LinkedSyncPlan {
+  const sheetBanks = bankEntries.filter(
+    ({ tx }) =>
+      tx.reviewStatus !== 'discarded' &&
+      typeof tx.sheetRowNumber === 'number' &&
+      tx.sheetRowNumber >= 1
+  );
+  const sheetExpenses = expenses.filter(
+    (exp) => typeof exp.sheetRowNumber === 'number' && exp.sheetRowNumber >= 1
+  );
+
+  const bankUpdatesByTab: Record<AccountType, LinkedBankFieldPatch[]> = {
+    Puja: [],
+    Regular: [],
+  };
+  const expenseUpdates: LinkedExpenseFieldPatch[] = [];
+
+  const bankById = new Map<string, BankLedgerEntry[]>();
+  for (const entry of sheetBanks) {
+    const idNorm = entry.tx.uniqueId.trim().toLowerCase();
+    const arr = bankById.get(idNorm) ?? [];
+    arr.push(entry);
+    bankById.set(idNorm, arr);
+  }
+
+  const expById = new Map<string, ExpenseRecord[]>();
+  for (const exp of sheetExpenses) {
+    const idNorm = exp.expId.trim().toLowerCase();
+    const arr = expById.get(idNorm) ?? [];
+    arr.push(exp);
+    expById.set(idNorm, arr);
+  }
+
+  const expKey = (e: ExpenseRecord) => `${e.expId}::${e.sheetRowNumber}`;
+  const bankKey = (b: BankLedgerEntry) => `${b.tab}::${b.tx.uniqueId}::${b.tx.sheetRowNumber}`;
+  const usedBanks = new Set<string>();
+  const usedExps = new Set<string>();
+  let linkedPairCount = 0;
+
+  const inspectPair = (bankEntry: BankLedgerEntry, exp: ExpenseRecord) => {
+    linkedPairCount++;
+    const bankTarget = bankEntry.tx.targetId?.trim() ?? '';
+    const expReconId = exp.reconSourceId.trim();
+
+    const needsBankTarget = bankTarget.toLowerCase() !== exp.expId.trim().toLowerCase();
+    const needsBankIsRecon = bankEntry.tx.isRecon !== 'Yes';
+    const expCat = exp.category.trim();
+    const needsBankCategory =
+      Boolean(expCat) && (bankEntry.tx.category ?? '').trim() !== expCat;
+
+    const needsExpReconId =
+      expReconId.toLowerCase() !== bankEntry.tx.uniqueId.trim().toLowerCase();
+    const needsExpIsRecon = exp.isRecon !== 'Yes';
+
+    if (
+      (needsBankTarget || needsBankIsRecon || needsBankCategory) &&
+      bankEntry.tx.sheetRowNumber
+    ) {
+      const patch: LinkedBankFieldPatch = {
+        sheetRowNumber: bankEntry.tx.sheetRowNumber,
+      };
+      if (needsBankTarget) patch.targetId = exp.expId;
+      if (needsBankIsRecon) patch.isRecon = 'Yes';
+      if (needsBankCategory) patch.category = expCat;
+      bankUpdatesByTab[bankEntry.tab].push(patch);
+    }
+
+    if ((needsExpReconId || needsExpIsRecon) && exp.sheetRowNumber) {
+      const patch: LinkedExpenseFieldPatch = {
+        sheetRowNumber: exp.sheetRowNumber,
+      };
+      if (needsExpReconId) patch.reconSourceId = bankEntry.tx.uniqueId;
+      if (needsExpIsRecon) patch.isRecon = 'Yes';
+      expenseUpdates.push(patch);
+    }
+  };
+
+  for (const entry of sheetBanks) {
+    const bk = bankKey(entry);
+    if (usedBanks.has(bk)) continue;
+    const target = entry.tx.targetId?.trim() ?? '';
+    if (!target) continue;
+
+    const candidates = expById.get(target.toLowerCase()) ?? [];
+    const matchedExp = candidates.find((e) => !usedExps.has(expKey(e)));
+    if (!matchedExp) continue;
+
+    usedBanks.add(bk);
+    usedExps.add(expKey(matchedExp));
+    inspectPair(entry, matchedExp);
+  }
+
+  for (const exp of sheetExpenses) {
+    const ek = expKey(exp);
+    if (usedExps.has(ek)) continue;
+    const recon = exp.reconSourceId.trim();
+    if (!recon) continue;
+
+    const candidates = bankById.get(recon.toLowerCase()) ?? [];
+    const matchedBank = candidates.find((b) => !usedBanks.has(bankKey(b)));
+    if (!matchedBank) continue;
+
+    usedBanks.add(bankKey(matchedBank));
+    usedExps.add(ek);
+    inspectPair(matchedBank, exp);
+  }
+
+  return {
+    linkedPairCount,
+    bankUpdatesByTab,
+    expenseUpdates,
+  };
+}
+

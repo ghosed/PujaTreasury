@@ -10,8 +10,9 @@ import {
 import { AccountType } from '../types/statement';
 import { getAccessToken, clearCachedToken } from '../services/firebaseAuth';
 import {
-  BankTargetIdUpdate,
-  batchUpdateBankTargetIds,
+  BankReconcileRowUpdate,
+  BankSheetColumnLayout,
+  batchUpdateBankReconciliation,
   fetchSheetLedger,
   LoadedSheetLedger,
   SheetsApiError,
@@ -134,14 +135,31 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
     return analysis.matches.filter((m) => !deselectedKeys.has(m.matchKey));
   }, [analysis, deselectedKeys]);
 
-  const tabsMissingTargetIdHeader = useMemo<AccountType[]>(() => {
+  const tabsMissingHeaders = useMemo<Array<{ tab: AccountType; columns: string[] }>>(() => {
     if (!bankLedgers) return [];
     const tabsToCheck: AccountType[] =
       scope === 'both' ? ['Puja', 'Regular'] : [scope];
-    return tabsToCheck.filter(
-      (tab) => bankLedgers[tab].tabExists && !bankLedgers[tab].hasTargetIdHeader
-    );
+    const missing: Array<{ tab: AccountType; columns: string[] }> = [];
+    for (const tab of tabsToCheck) {
+      const ledger = bankLedgers[tab];
+      if (!ledger.tabExists) continue;
+      const cols: string[] = [];
+      if (!ledger.hasTargetIdHeader) cols.push('Target ID');
+      if (!ledger.hasIsReconHeader) cols.push('Is_Recon');
+      if (!ledger.hasCategoryHeader) cols.push('Category');
+      if (cols.length > 0) {
+        missing.push({ tab, columns: cols });
+      }
+    }
+    return missing;
   }, [bankLedgers, scope]);
+
+  const expenseMissingIsReconHeader = Boolean(
+    expenseWorkspace &&
+      expenseWorkspace.meta.ledgerTabExists &&
+      !expenseWorkspace.meta.needsHeader &&
+      !expenseWorkspace.meta.hasIsReconHeader
+  );
 
   const toggleMatch = (matchKey: string) => {
     setDeselectedKeys((prev) => {
@@ -166,7 +184,8 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
 
   const handleApplyReconciliation = async () => {
     if (!bankLedgers || !expenseWorkspace) return;
-    const hasHeaderInitialization = tabsMissingTargetIdHeader.length > 0;
+    const hasHeaderInitialization =
+      tabsMissingHeaders.length > 0 || expenseMissingIsReconHeader;
     if (selectedMatches.length === 0 && !hasHeaderInitialization) return;
 
     const token = await getAccessToken();
@@ -180,7 +199,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
     setErrorMsg(null);
 
     try {
-      const bankUpdatesByTab: Record<AccountType, BankTargetIdUpdate[]> = {
+      const bankUpdatesByTab: Record<AccountType, BankReconcileRowUpdate[]> = {
         Puja: [],
         Regular: [],
       };
@@ -188,16 +207,31 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
 
       for (const match of selectedMatches) {
         if (match.needsBankUpdate && match.bankTx.sheetRowNumber) {
-          bankUpdatesByTab[match.bankTab].push({
+          const upd: BankReconcileRowUpdate = {
             sheetRowNumber: match.bankTx.sheetRowNumber,
-            targetId: match.expense.expId,
-          });
+          };
+          if (match.needsBankTargetIdUpdate) {
+            upd.targetId = match.expense.expId;
+          }
+          if (match.needsBankIsReconUpdate) {
+            upd.isRecon = 'Yes';
+          }
+          if (match.needsBankCategoryUpdate) {
+            upd.category = match.expense.category.trim();
+          }
+          bankUpdatesByTab[match.bankTab].push(upd);
         }
         if (match.needsExpenseUpdate && match.expense.sheetRowNumber) {
-          expenseUpdates.push({
+          const expUpd: ExpenseReconUpdate = {
             sheetRowNumber: match.expense.sheetRowNumber,
-            reconSourceId: match.bankTx.uniqueId,
-          });
+          };
+          if (match.needsExpenseReconIdUpdate) {
+            expUpd.reconSourceId = match.bankTx.uniqueId;
+          }
+          if (match.needsExpenseIsReconUpdate) {
+            expUpd.isRecon = 'Yes';
+          }
+          expenseUpdates.push(expUpd);
         }
       }
 
@@ -206,18 +240,26 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
 
       for (const tab of ['Puja', 'Regular'] as AccountType[]) {
         const updates = bankUpdatesByTab[tab];
+        const ledger = bankLedgers[tab];
         const needsHeaderInit =
           (scope === 'both' || scope === tab) &&
-          bankLedgers[tab].tabExists &&
-          !bankLedgers[tab].hasTargetIdHeader;
+          ledger.tabExists &&
+          (!ledger.hasTargetIdHeader || !ledger.hasIsReconHeader || !ledger.hasCategoryHeader);
 
         if (updates.length > 0 || needsHeaderInit) {
-          const count = await batchUpdateBankTargetIds(
+          const layout: BankSheetColumnLayout = {
+            hasTargetIdHeader: ledger.hasTargetIdHeader,
+            targetIdColIndex: ledger.targetIdColIndex,
+            hasIsReconHeader: ledger.hasIsReconHeader,
+            isReconColIndex: ledger.isReconColIndex,
+            hasCategoryHeader: ledger.hasCategoryHeader,
+            categoryColIndex: ledger.categoryColIndex,
+          };
+          const count = await batchUpdateBankReconciliation(
             token,
             TARGET_SPREADSHEET_ID,
             tab,
-            bankLedgers[tab].targetIdColIndex,
-            needsHeaderInit,
+            layout,
             updates
           );
           bankUpdatedCount += count;
@@ -226,7 +268,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
       }
 
       let expenseUpdatedCount = 0;
-      if (expenseUpdates.length > 0) {
+      if (expenseUpdates.length > 0 || expenseMissingIsReconHeader) {
         expenseUpdatedCount = await batchUpdateExpenseReconIds(
           token,
           expenseWorkspace.meta,
@@ -247,7 +289,9 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         setErrorMsg('Google session expired while saving updates. Please sign in again.');
       } else {
         setErrorMsg(
-          err instanceof Error ? err.message : 'Failed to update reconciliation IDs in Google Sheets.'
+          err instanceof Error
+            ? err.message
+            : 'Failed to update reconciliation fields in Google Sheets.'
         );
       }
     } finally {
@@ -261,7 +305,9 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
     !isLoading &&
     !isApplying &&
     Boolean(analysis) &&
-    (selectedMatches.length > 0 || tabsMissingTargetIdHeader.length > 0);
+    (selectedMatches.length > 0 ||
+      tabsMissingHeaders.length > 0 ||
+      expenseMissingIsReconHeader);
 
   return (
     <div
@@ -280,8 +326,8 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
                 Reconcile Bank Ledger &amp; Expense Ledger
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                Matches Bank Expenses with Expense_Ledger items to populate Bank &ldquo;Target ID&rdquo;
-                (Exp_ID) and Expense &ldquo;Recon Source_ID&rdquo; (Bank Unique ID).
+                Links matching Bank &amp; Expense rows, sets <strong>Is_Recon = Yes</strong> in both
+                sheets, and copies Expense <strong>Category</strong> into Bank_Ledger.
               </p>
             </div>
           </div>
@@ -390,11 +436,21 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
             </div>
           )}
 
-          {tabsMissingTargetIdHeader.length > 0 && !isLoading && (
-            <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-700">
-              Column <strong>Target ID</strong> will be added to the header row of Bank Ledger{' '}
-              {tabsMissingTargetIdHeader.length === 1 ? 'tab' : 'tabs'}:{' '}
-              <strong>{tabsMissingTargetIdHeader.join(', ')}</strong>.
+          {(tabsMissingHeaders.length > 0 || expenseMissingIsReconHeader) && !isLoading && (
+            <div className="space-y-1 rounded-md border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-700">
+              {tabsMissingHeaders.map((item) => (
+                <div key={item.tab}>
+                  Bank Ledger tab <strong>{item.tab}</strong> will initialize missing header{' '}
+                  {item.columns.length === 1 ? 'column' : 'columns'}:{' '}
+                  <strong>{item.columns.join(', ')}</strong>.
+                </div>
+              ))}
+              {expenseMissingIsReconHeader && (
+                <div>
+                  Expense_Ledger tab <strong>{expenseWorkspace?.meta.ledgerTabName}</strong> will
+                  initialize missing header column: <strong>Is_Recon</strong>.
+                </div>
+              )}
             </div>
           )}
 
@@ -566,15 +622,33 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
                                   {m.reason}
                                 </div>
                                 <div className="mt-1 space-y-0.5 font-mono text-[10px] text-slate-500">
-                                  {m.needsBankUpdate && (
+                                  {m.needsBankTargetIdUpdate && (
                                     <div>
-                                      Bank Target ID ← <span className="text-teal-700">{m.expense.expId}</span>
+                                      Bank Target ID ←{' '}
+                                      <span className="text-teal-700">{m.expense.expId}</span>
                                     </div>
                                   )}
-                                  {m.needsExpenseUpdate && (
+                                  {m.needsBankIsReconUpdate && (
+                                    <div>
+                                      Bank Is_Recon ← <span className="text-emerald-700">Yes</span>
+                                    </div>
+                                  )}
+                                  {m.needsBankCategoryUpdate && (
+                                    <div>
+                                      Bank Category ←{' '}
+                                      <span className="text-teal-700">{m.expense.category}</span>
+                                    </div>
+                                  )}
+                                  {m.needsExpenseReconIdUpdate && (
                                     <div>
                                       Recon Source_ID ←{' '}
                                       <span className="text-slate-700">{m.bankTx.uniqueId}</span>
+                                    </div>
+                                  )}
+                                  {m.needsExpenseIsReconUpdate && (
+                                    <div>
+                                      Expense Is_Recon ←{' '}
+                                      <span className="text-emerald-700">Yes</span>
                                     </div>
                                   )}
                                 </div>
@@ -594,8 +668,9 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-6 py-4">
           <p className="text-[11px] text-slate-500">
-            Only selected matches will update <strong>Target ID</strong> in Bank Ledger and{' '}
-            <strong>Recon Source_ID</strong> in Expense_Ledger.
+            Selected matches update <strong>Target ID</strong>, <strong>Is_Recon</strong>, and{' '}
+            <strong>Category</strong> in Bank Ledger plus <strong>Recon Source_ID</strong> and{' '}
+            <strong>Is_Recon</strong> in Expense_Ledger.
           </p>
           <div className="flex items-center gap-3">
             <button
@@ -616,8 +691,8 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
                 ? 'Updating Google Sheets...'
                 : selectedMatches.length > 0
                   ? `Confirm & Update ${selectedMatches.length} Match${selectedMatches.length === 1 ? '' : 'es'}`
-                  : tabsMissingTargetIdHeader.length > 0
-                    ? 'Initialize "Target ID" Column'
+                  : tabsMissingHeaders.length > 0 || expenseMissingIsReconHeader
+                    ? 'Initialize Missing Columns'
                     : 'No Updates Selected'}
             </button>
           </div>

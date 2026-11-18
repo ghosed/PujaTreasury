@@ -44,6 +44,10 @@ export interface NormalizedTransaction {
   syncStatus: SyncStatus;
   /** Linked Exp_ID from Expense_Ledger ("Target ID" column in Bank Ledger) */
   targetId?: string;
+  /** Reconciliation status ("Is_Recon" column: "Yes" or "No") */
+  isRecon?: 'Yes' | 'No';
+  /** Expense Category copied or selected for this transaction ("Category" column) */
+  category?: string;
   /** Exact 1-based row number in Google Sheets when loaded from the sheet */
   sheetRowNumber?: number | null;
 }
@@ -69,6 +73,10 @@ export interface SyncPlan {
   needsHeader: boolean;
   needsTargetIdHeader?: boolean;
   targetIdColIndex?: number;
+  needsIsReconHeader?: boolean;
+  isReconColIndex?: number;
+  needsCategoryHeader?: boolean;
+  categoryColIndex?: number;
   existingIdsCount: number;
   toAppend: NormalizedTransaction[];
   skippedAlreadySynced: NormalizedTransaction[];

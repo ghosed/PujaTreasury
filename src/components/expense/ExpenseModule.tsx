@@ -36,6 +36,7 @@ import {
   CANONICAL_EXPENSE_HEADERS,
   EXPENSE_SPREADSHEET_ID,
   fetchExpenseWorkspace,
+  updateExpenseIsRecon,
   updateExpenseRecord,
 } from '../../services/expenseSheets';
 import { SheetsApiError } from '../../services/googleSheets';
@@ -54,6 +55,7 @@ interface ExpenseModuleProps {
   refreshNonce?: number;
   externalStatusMessage?: string | null;
   onDismissExternalStatus?: () => void;
+  onExpenseMutated?: () => void;
 }
 
 const EMPTY_LOOKUPS: ExpenseLookups = {
@@ -73,7 +75,7 @@ const EMPTY_STAGED_SUMMARY: StagedExpenseBatchSummary = {
 };
 
 type OriginFilter = 'all' | 'sheet' | 'staged';
-type ExpenseLinkFilter = 'all' | 'unlinked' | 'linked';
+type ExpenseLinkFilter = 'all' | 'unrecon' | 'recon' | 'unlinked' | 'linked';
 
 export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   needsAuth,
@@ -84,6 +86,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   refreshNonce = 0,
   externalStatusMessage = null,
   onDismissExternalStatus,
+  onExpenseMutated,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isFetchingRef = useRef(false);
@@ -121,6 +124,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   // Confirmation & Sync state
   const [pendingMutation, setPendingMutation] = useState<ExpenseMutationAction | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [updatingReconExpId, setUpdatingReconExpId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -484,6 +488,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
         );
       }
       setPendingMutation(null);
+      onExpenseMutated?.();
     } catch (err) {
       if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
         clearCachedToken();
@@ -497,6 +502,62 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       }
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleUpdateExpenseIsRecon = async (
+    rec: ExpenseRecord,
+    nextIsRecon: 'Yes' | 'No'
+  ) => {
+    if (rec.sourceOrigin === 'csv' || !rec.sheetRowNumber) {
+      setStagedOverrides((prev) => ({
+        ...prev,
+        [rec.expId]: {
+          ...(prev[rec.expId] ?? rec),
+          isRecon: nextIsRecon,
+        },
+      }));
+      return;
+    }
+
+    if (!sheetMeta) return;
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      setErrorMessage('Sign in with Google to save Is_Recon changes to Expense_Ledger.');
+      return;
+    }
+
+    const prevRecords = sheetRecords;
+    setUpdatingReconExpId(rec.expId);
+    setErrorMessage(null);
+    setSheetRecords((prev) =>
+      prev.map((item) =>
+        item.expId === rec.expId && item.sheetRowNumber === rec.sheetRowNumber
+          ? { ...item, isRecon: nextIsRecon }
+          : item
+      )
+    );
+
+    try {
+      await updateExpenseIsRecon(token, sheetMeta, rec.sheetRowNumber, nextIsRecon);
+      setSheetMeta((prev) => (prev ? { ...prev, hasIsReconHeader: true } : prev));
+      if (rec.reconSourceId.trim() !== '') {
+        onExpenseMutated?.();
+      }
+    } catch (err) {
+      setSheetRecords(prevRecords);
+      if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired while saving Is_Recon. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to update Is_Recon in Expense_Ledger.'
+        );
+      }
+    } finally {
+      setUpdatingReconExpId(null);
     }
   };
 
@@ -591,6 +652,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     const matched = allRecords.filter((rec) => {
       if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') return false;
       if (originFilter === 'staged' && rec.sourceOrigin !== 'csv') return false;
+      if (linkFilter === 'unrecon' && (rec.isRecon ?? 'No') === 'Yes') return false;
+      if (linkFilter === 'recon' && (rec.isRecon ?? 'No') !== 'Yes') return false;
       if (linkFilter === 'unlinked' && rec.reconSourceId.trim() !== '') return false;
       if (linkFilter === 'linked' && rec.reconSourceId.trim() === '') return false;
       if (
@@ -618,7 +681,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       if (endDate && rec.date > endDate) return false;
       if (q) {
         const hay =
-          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
+          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -714,9 +777,9 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     searchQuery,
   ]);
 
-  const unlinkedCategorySummary = useMemo(() => {
+  const unreconCategorySummary = useMemo(() => {
     const map = new Map<string, { category: string; count: number; totalCents: number }>();
-    const unlinkedRecords: ExpenseRecord[] = [];
+    const unreconRecords: ExpenseRecord[] = [];
     const q = searchQuery.trim().toLowerCase();
     let totalCount = 0;
     let totalCents = 0;
@@ -724,7 +787,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     for (const rec of allRecords) {
       if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') continue;
       if (originFilter === 'staged' && rec.sourceOrigin !== 'csv') continue;
-      if (rec.reconSourceId.trim() !== '') continue;
+      if ((rec.isRecon ?? 'No') === 'Yes') continue;
       if (statusFilter !== 'all' && rec.status.toLowerCase() !== statusFilter.toLowerCase()) {
         continue;
       }
@@ -739,7 +802,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       if (endDate && rec.date > endDate) continue;
       if (q) {
         const hay =
-          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
+          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
 
@@ -750,7 +813,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       entry.totalCents += cents;
       map.set(cat, entry);
 
-      unlinkedRecords.push(rec);
+      unreconRecords.push(rec);
       totalCount++;
       totalCents += cents;
     }
@@ -768,7 +831,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
 
     return {
       items,
-      records: unlinkedRecords,
+      records: unreconRecords,
       totalCount,
       totalAmount: totalCents / 100,
       activeCategoryCount: items.length,
@@ -810,6 +873,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
           rec.paymentMode,
           rec.reconSource,
           rec.reconSourceId,
+          rec.isRecon || 'No',
         ]
           .map(escapeCsv)
           .join(',')
@@ -831,8 +895,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     exportRecordsCsv(filteredRecords, 'expense-ledger-export.csv');
   };
 
-  const handleExportUnlinkedCsv = () => {
-    const sorted = [...unlinkedCategorySummary.records].sort((a, b) => {
+  const handleExportUnreconCsv = () => {
+    const sorted = [...unreconCategorySummary.records].sort((a, b) => {
       const cmp =
         dateSortOrder === 'desc'
           ? b.date.localeCompare(a.date)
@@ -840,7 +904,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       if (cmp !== 0) return cmp;
       return b.expId.localeCompare(a.expId);
     });
-    exportRecordsCsv(sorted, 'expense-ledger-unlinked-expenses.csv');
+    exportRecordsCsv(sorted, 'expense-ledger-unrecon-expenses.csv');
   };
 
   const resetFilters = () => {
@@ -1117,14 +1181,14 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 Add Expense
               </button>
 
-              {unlinkedCategorySummary.totalCount > 0 && (
+              {unreconCategorySummary.totalCount > 0 && (
                 <button
                   type="button"
-                  onClick={handleExportUnlinkedCsv}
+                  onClick={handleExportUnreconCsv}
                   className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
                   <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                  Export Unlinked Expenses CSV
+                  Export Unrecon Expenses CSV
                 </button>
               )}
 
@@ -1323,7 +1387,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 {categorySummaries.map((item) => {
                   const isSelected =
                     categoryFilter.toLowerCase() === item.category.toLowerCase() &&
-                    linkFilter !== 'unlinked';
+                    linkFilter !== 'unrecon';
                   return (
                     <button
                       key={item.category}
@@ -1331,12 +1395,12 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                       onClick={() => {
                         if (
                           categoryFilter.toLowerCase() === item.category.toLowerCase() &&
-                          linkFilter !== 'unlinked'
+                          linkFilter !== 'unrecon'
                         ) {
                           setCategoryFilter('all');
                         } else {
                           setCategoryFilter(item.category);
-                          if (linkFilter === 'unlinked') {
+                          if (linkFilter === 'unrecon') {
                             setLinkFilter('all');
                           }
                         }
@@ -1370,23 +1434,23 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             </section>
           )}
 
-          {/* Summary by Category (Unlinked Expenses) Cards */}
+          {/* Summary by Category (Unrecon Expenses) Cards */}
           {allRecords.length > 0 && (
             <section
-              aria-label="Summary by Category (Unlinked Expenses)"
+              aria-label="Summary by Category (Unrecon Expenses)"
               className="space-y-3"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <h2 className="font-semibold text-slate-900">
-                    Summary by Category (Unlinked Expenses)
+                    Summary by Category (Unrecon Expenses)
                   </h2>
                   <span aria-hidden="true" className="text-slate-300">
                     ·
                   </span>
                   <span className="font-mono text-slate-500 tabular-nums">
-                    {unlinkedCategorySummary.activeCategoryCount}{' '}
-                    {unlinkedCategorySummary.activeCategoryCount === 1
+                    {unreconCategorySummary.activeCategoryCount}{' '}
+                    {unreconCategorySummary.activeCategoryCount === 1
                       ? 'category'
                       : 'categories'}
                   </span>
@@ -1394,9 +1458,9 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     ·
                   </span>
                   <span className="font-mono text-slate-700 tabular-nums">
-                    {unlinkedCategorySummary.totalCount.toLocaleString()}{' '}
-                    {unlinkedCategorySummary.totalCount === 1 ? 'item' : 'items'} ·{' '}
-                    {unlinkedCategorySummary.totalAmount.toLocaleString('en-US', {
+                    {unreconCategorySummary.totalCount.toLocaleString()}{' '}
+                    {unreconCategorySummary.totalCount === 1 ? 'item' : 'items'} ·{' '}
+                    {unreconCategorySummary.totalAmount.toLocaleString('en-US', {
                       style: 'currency',
                       currency: 'USD',
                     })}
@@ -1408,35 +1472,35 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3">
-                  {unlinkedCategorySummary.totalCount > 0 && (
+                  {unreconCategorySummary.totalCount > 0 && (
                     <>
                       <button
                         type="button"
-                        onClick={handleExportUnlinkedCsv}
+                        onClick={handleExportUnreconCsv}
                         className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                       >
                         <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                        Export Unlinked CSV
+                        Export Unrecon CSV
                       </button>
                       <button
                         type="button"
                         onClick={() => {
-                          if (linkFilter === 'unlinked' && categoryFilter === 'all') {
+                          if (linkFilter === 'unrecon' && categoryFilter === 'all') {
                             setLinkFilter('all');
                           } else {
-                            setLinkFilter('unlinked');
+                            setLinkFilter('unrecon');
                             setCategoryFilter('all');
                           }
                         }}
                         className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
                       >
-                        {linkFilter === 'unlinked' && categoryFilter === 'all'
+                        {linkFilter === 'unrecon' && categoryFilter === 'all'
                           ? 'Show All Records'
-                          : 'Filter Table to Unlinked'}
+                          : 'Filter Table to Unrecon'}
                       </button>
                     </>
                   )}
-                  {linkFilter === 'unlinked' && categoryFilter !== 'all' && (
+                  {linkFilter === 'unrecon' && categoryFilter !== 'all' && (
                     <button
                       type="button"
                       onClick={() => {
@@ -1445,37 +1509,37 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                       }}
                       className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
                     >
-                      Reset Unlinked Filter
+                      Reset Unrecon Filter
                     </button>
                   )}
                 </div>
               </div>
 
-              {unlinkedCategorySummary.items.length === 0 ? (
+              {unreconCategorySummary.items.length === 0 ? (
                 <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
-                  All expense records in this view are linked to the Bank Ledger.
+                  All expense records in this view have Is_Recon = &ldquo;Yes&rdquo;.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  {unlinkedCategorySummary.items.map((item) => {
+                  {unreconCategorySummary.items.map((item) => {
                     const isSelected =
-                      linkFilter === 'unlinked' &&
+                      linkFilter === 'unrecon' &&
                       categoryFilter.toLowerCase() === item.category.toLowerCase();
                     const sharePct =
-                      unlinkedCategorySummary.totalAmount > 0
-                        ? (item.total / unlinkedCategorySummary.totalAmount) * 100
+                      unreconCategorySummary.totalAmount > 0
+                        ? (item.total / unreconCategorySummary.totalAmount) * 100
                         : 0;
 
                     return (
                       <button
-                        key={`unlinked-${item.category}`}
+                        key={`unrecon-${item.category}`}
                         type="button"
                         onClick={() => {
                           if (isSelected) {
                             setLinkFilter('all');
                             setCategoryFilter('all');
                           } else {
-                            setLinkFilter('unlinked');
+                            setLinkFilter('unrecon');
                             setCategoryFilter(item.category);
                           }
                         }}
@@ -1504,8 +1568,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                         </div>
 
                         <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] text-slate-500 tabular-nums">
-                          <span>{sharePct.toFixed(1)}% of unlinked</span>
-                          <span>No Recon Source_ID</span>
+                          <span>{sharePct.toFixed(1)}% of unrecon</span>
+                          <span>Is_Recon = No</span>
                         </div>
                       </button>
                     );
@@ -1677,10 +1741,12 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 <select
                   value={linkFilter}
                   onChange={(e) => setLinkFilter(e.target.value as ExpenseLinkFilter)}
-                  aria-label="Filter by Bank Link Status"
+                  aria-label="Filter by Reconciliation or Link Status"
                   className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
                 >
-                  <option value="all">All Link States</option>
+                  <option value="all">All Recon States</option>
+                  <option value="unrecon">Unrecon Expenses (Is_Recon = No)</option>
+                  <option value="recon">Reconciled Expenses (Is_Recon = Yes)</option>
                   <option value="unlinked">Unlinked to Bank</option>
                   <option value="linked">Linked to Bank</option>
                 </select>
@@ -1754,11 +1820,13 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               needsAuth={needsAuth}
               isLoggingIn={isLoggingIn}
               dateSortOrder={dateSortOrder}
+              updatingReconExpId={updatingReconExpId}
               onSignIn={onSignIn}
               onToggleDateSort={() =>
                 setDateSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
               }
               onEditRecord={handleOpenEditRecord}
+              onUpdateIsRecon={handleUpdateExpenseIsRecon}
               onTriggerUpload={() => fileInputRef.current?.click()}
               onOpenManualEntry={handleOpenManualEntry}
               onResetFilters={resetFilters}

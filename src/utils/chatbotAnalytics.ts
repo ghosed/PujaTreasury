@@ -75,6 +75,7 @@ export function buildLedgerSnapshot(
       description: rec.description.trim(),
       reconSource: rec.reconSource.trim(),
       reconSourceId: rec.reconSourceId.trim(),
+      isRecon: rec.isRecon === 'Yes' ? 'Yes' : 'No',
       isLinked: rec.reconSourceId.trim() !== '',
     };
   });
@@ -97,6 +98,8 @@ export function buildLedgerSnapshot(
       referenceNumber: tx.referenceNumber.trim(),
       source: tx.source.trim() || 'Other',
       targetId,
+      isRecon: tx.isRecon === 'Yes' ? 'Yes' : 'No',
+      category: (tx.category ?? '').trim(),
       isLinked: targetId !== '',
     };
   };

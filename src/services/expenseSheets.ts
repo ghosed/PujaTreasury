@@ -20,7 +20,14 @@ export const CANONICAL_EXPENSE_HEADERS = [
   'Payment Mode',
   'Recon Source',
   'Recon Source_ID',
+  'Is_Recon',
 ] as const;
+
+function normalizeIsRecon(raw: unknown): 'Yes' | 'No' {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'yes' || v === 'true' || v === 'y') return 'Yes';
+  return 'No';
+}
 
 interface SpreadsheetMetadata {
   properties?: { title?: string };
@@ -398,7 +405,8 @@ type ExpenseFieldKey =
   | 'puja'
   | 'paymentMode'
   | 'reconSource'
-  | 'reconSourceId';
+  | 'reconSourceId'
+  | 'isRecon';
 
 const HEADER_TO_FIELD: Record<string, ExpenseFieldKey> = {
   expid: 'expId',
@@ -420,6 +428,7 @@ const HEADER_TO_FIELD: Record<string, ExpenseFieldKey> = {
   paymode: 'paymentMode',
   reconsource: 'reconSource',
   reconsourceid: 'reconSourceId',
+  isrecon: 'isRecon',
 };
 
 function buildColumnFieldMap(headers: string[]): Map<ExpenseFieldKey, number> {
@@ -436,20 +445,25 @@ function buildColumnFieldMap(headers: string[]): Map<ExpenseFieldKey, number> {
 
 function serializeExpenseRow(
   record: ExpenseRecord,
-  columnHeaders: string[]
+  columnHeaders: string[],
+  isReconColIndex: number = 11
 ): Array<string | number> {
   const fieldToIdx = buildColumnFieldMap(columnHeaders);
-  const length = Math.max(columnHeaders.length, CANONICAL_EXPENSE_HEADERS.length);
+  const length = Math.max(
+    columnHeaders.length,
+    CANONICAL_EXPENSE_HEADERS.length,
+    isReconColIndex + 1
+  );
   const row: Array<string | number> = record.rawRowValues
     ? [...record.rawRowValues]
     : new Array(length).fill('');
 
-  while (row.length < columnHeaders.length) {
+  while (row.length < length) {
     row.push('');
   }
 
-  const setField = (field: ExpenseFieldKey, val: string | number) => {
-    const idx = fieldToIdx.get(field);
+  const setField = (field: ExpenseFieldKey, val: string | number, fallbackIdx?: number) => {
+    const idx = fieldToIdx.get(field) ?? fallbackIdx;
     if (idx !== undefined) {
       row[idx] = val;
     }
@@ -466,6 +480,7 @@ function serializeExpenseRow(
   setField('paymentMode', record.paymentMode);
   setField('reconSource', record.reconSource);
   setField('reconSourceId', record.reconSourceId);
+  setField('isRecon', record.isRecon || 'No', isReconColIndex);
 
   return row;
 }
@@ -564,6 +579,9 @@ export async function fetchExpenseWorkspace(
   }
 
   const fieldIdx = buildColumnFieldMap(columnHeaders);
+  const hasIsReconHeader = needsHeader ? true : fieldIdx.has('isRecon');
+  const isReconColIndex =
+    fieldIdx.get('isRecon') ?? Math.max(columnHeaders.length, 11);
   const startRowIdx = needsHeader ? 0 : 1;
 
   const records: ExpenseRecord[] = [];
@@ -600,6 +618,9 @@ export async function fetchExpenseWorkspace(
     const paymentMode = readStr('paymentMode', 8);
     const reconSource = readStr('reconSource', 9);
     const reconSourceId = readStr('reconSourceId', 10);
+    const rawIsRecon = hasIsReconHeader ? readStr('isRecon', isReconColIndex) : '';
+    const isRecon: 'Yes' | 'No' =
+      rawIsRecon !== '' ? normalizeIsRecon(rawIsRecon) : 'No';
 
     // Skip rows missing basic identifiable data
     if (!rawExpId && !rawDate && amount === null && !description) {
@@ -623,6 +644,7 @@ export async function fetchExpenseWorkspace(
       paymentMode,
       reconSource,
       reconSourceId,
+      isRecon,
       rawRowValues: row,
       sourceOrigin: 'sheet',
     });
@@ -661,6 +683,8 @@ export async function fetchExpenseWorkspace(
       ledgerTabName,
       ledgerTabExists,
       needsHeader,
+      hasIsReconHeader,
+      isReconColIndex,
       columnHeaders,
       lookUpTabName,
       catSubcatTabName,
@@ -671,12 +695,75 @@ export async function fetchExpenseWorkspace(
   };
 }
 
+export async function fetchExpenseCategories(
+  accessToken: string,
+  spreadsheetId: string = EXPENSE_SPREADSHEET_ID
+): Promise<string[]> {
+  const meta = await sheetsFetch<SpreadsheetMetadata>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}?fields=sheets.properties`,
+    accessToken
+  );
+
+  const sheetTitles =
+    meta.sheets?.map((s) => s.properties?.title).filter((t): t is string => Boolean(t)) ?? [];
+
+  const lookUpTabName =
+    sheetTitles.find((t) => normalizeHeaderKey(t) === 'lookup') ??
+    sheetTitles.find((t) => normalizeHeaderKey(t).includes('lookup')) ??
+    null;
+
+  if (!lookUpTabName) return [];
+
+  const safeTab = `'${lookUpTabName.replace(/'/g, "''")}'`;
+  const encodedRange = encodeURIComponent(`${safeTab}!A:ZZ`);
+  const resp = await sheetsFetch<{ values?: Array<Array<string | number>> }>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/${encodedRange}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`,
+    accessToken
+  );
+
+  return parseLookUpTab(resp.values ?? []).categories;
+}
+
+async function ensureExpenseIsReconHeader(
+  accessToken: string,
+  meta: ExpenseSheetMeta
+): Promise<void> {
+  if (!meta.ledgerTabExists || meta.needsHeader || meta.hasIsReconHeader) return;
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.isReconColIndex);
+  const headerRange = encodeURIComponent(`${safeTab}!${colA1}1`);
+  await sheetsFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      meta.spreadsheetId
+    )}/values/${headerRange}?valueInputOption=USER_ENTERED`,
+    accessToken,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        majorDimension: 'ROWS',
+        values: [['Is_Recon']],
+      }),
+    }
+  );
+}
+
 export async function appendExpenseRecords(
   accessToken: string,
   meta: ExpenseSheetMeta,
   records: ExpenseRecord[]
 ): Promise<{ appendedCount: number }> {
-  const { spreadsheetId, ledgerTabName, ledgerTabExists, needsHeader, columnHeaders } = meta;
+  const {
+    spreadsheetId,
+    ledgerTabName,
+    ledgerTabExists,
+    needsHeader,
+    columnHeaders,
+    isReconColIndex,
+  } = meta;
 
   if (!ledgerTabExists) {
     await sheetsFetch(
@@ -699,20 +786,23 @@ export async function appendExpenseRecords(
         }),
       }
     );
+  } else {
+    await ensureExpenseIsReconHeader(accessToken, meta);
   }
 
   const rowsToWrite: Array<Array<string | number>> = [];
   if (needsHeader) {
-    rowsToWrite.push([...columnHeaders]);
+    rowsToWrite.push([...CANONICAL_EXPENSE_HEADERS]);
   }
 
   for (const record of records) {
-    rowsToWrite.push(serializeExpenseRow(record, columnHeaders));
+    rowsToWrite.push(serializeExpenseRow(record, columnHeaders, isReconColIndex));
   }
 
   if (rowsToWrite.length > 0) {
     const CHUNK_SIZE = 500;
-    const range = encodeURIComponent(`${ledgerTabName}!A1`);
+    const safeTab = `'${ledgerTabName.replace(/'/g, "''")}'`;
+    const range = encodeURIComponent(`${safeTab}!A1`);
 
     for (let i = 0; i < rowsToWrite.length; i += CHUNK_SIZE) {
       const chunk = rowsToWrite.slice(i, i + CHUNK_SIZE);
@@ -744,10 +834,15 @@ export async function updateExpenseRecord(
     throw new Error('Cannot update an expense record that has not been saved to Google Sheets.');
   }
 
-  const serializedRow = serializeExpenseRow(record, meta.columnHeaders);
-  const endCol = colIndexToA1(Math.max(serializedRow.length, meta.columnHeaders.length) - 1);
+  await ensureExpenseIsReconHeader(accessToken, meta);
+
+  const serializedRow = serializeExpenseRow(record, meta.columnHeaders, meta.isReconColIndex);
+  const endCol = colIndexToA1(
+    Math.max(serializedRow.length, meta.columnHeaders.length, meta.isReconColIndex + 1) - 1
+  );
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
   const range = encodeURIComponent(
-    `${meta.ledgerTabName}!A${record.sheetRowNumber}:${endCol}${record.sheetRowNumber}`
+    `${safeTab}!A${record.sheetRowNumber}:${endCol}${record.sheetRowNumber}`
   );
 
   await sheetsFetch(
@@ -765,9 +860,40 @@ export async function updateExpenseRecord(
   );
 }
 
+export async function updateExpenseIsRecon(
+  accessToken: string,
+  meta: ExpenseSheetMeta,
+  sheetRowNumber: number,
+  isRecon: 'Yes' | 'No'
+): Promise<void> {
+  if (!sheetRowNumber || sheetRowNumber < 1) {
+    throw new Error('Cannot update Is_Recon for an unsaved expense record.');
+  }
+
+  await ensureExpenseIsReconHeader(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.isReconColIndex);
+  const range = encodeURIComponent(`${safeTab}!${colA1}${sheetRowNumber}`);
+
+  await sheetsFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      meta.spreadsheetId
+    )}/values/${range}?valueInputOption=USER_ENTERED`,
+    accessToken,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        majorDimension: 'ROWS',
+        values: [[isRecon]],
+      }),
+    }
+  );
+}
+
 export interface ExpenseReconUpdate {
   sheetRowNumber: number;
-  reconSourceId: string;
+  reconSourceId?: string;
+  isRecon?: 'Yes' | 'No';
 }
 
 export async function batchUpdateExpenseReconIds(
@@ -775,36 +901,65 @@ export async function batchUpdateExpenseReconIds(
   meta: ExpenseSheetMeta,
   updates: ExpenseReconUpdate[]
 ): Promise<number> {
-  if (updates.length === 0) return 0;
+  if (updates.length === 0 && meta.hasIsReconHeader) return 0;
 
   const fieldIdx = buildColumnFieldMap(meta.columnHeaders);
   let reconIdColIndex = fieldIdx.get('reconSourceId');
-  let ensureHeader = false;
+  let ensureReconIdHeader = false;
 
   if (reconIdColIndex === undefined) {
     reconIdColIndex = Math.max(meta.columnHeaders.length, 10);
-    ensureHeader = !meta.needsHeader;
+    ensureReconIdHeader = !meta.needsHeader;
   }
 
-  const colA1 = colIndexToA1(reconIdColIndex);
+  let isReconColIndex = fieldIdx.get('isRecon');
+  let ensureIsReconHeader = false;
+  if (isReconColIndex === undefined) {
+    isReconColIndex = Math.max(
+      meta.isReconColIndex,
+      reconIdColIndex === meta.isReconColIndex ? reconIdColIndex + 1 : meta.isReconColIndex,
+      11
+    );
+    ensureIsReconHeader = !meta.needsHeader;
+  }
+
+  const reconColA1 = colIndexToA1(reconIdColIndex);
+  const isReconColA1 = colIndexToA1(isReconColIndex);
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
   const data: Array<{ range: string; values: string[][] }> = [];
 
-  if (ensureHeader) {
+  if (ensureReconIdHeader) {
     data.push({
-      range: `${safeTab}!${colA1}1`,
+      range: `${safeTab}!${reconColA1}1`,
       values: [['Recon Source_ID']],
+    });
+  }
+  if (ensureIsReconHeader) {
+    data.push({
+      range: `${safeTab}!${isReconColA1}1`,
+      values: [['Is_Recon']],
     });
   }
 
   let updatedRowCount = 0;
   for (const upd of updates) {
     if (!upd.sheetRowNumber || upd.sheetRowNumber < 1) continue;
-    data.push({
-      range: `${safeTab}!${colA1}${upd.sheetRowNumber}`,
-      values: [[upd.reconSourceId]],
-    });
-    updatedRowCount++;
+    let touched = false;
+    if (upd.reconSourceId !== undefined) {
+      data.push({
+        range: `${safeTab}!${reconColA1}${upd.sheetRowNumber}`,
+        values: [[upd.reconSourceId]],
+      });
+      touched = true;
+    }
+    if (upd.isRecon !== undefined) {
+      data.push({
+        range: `${safeTab}!${isReconColA1}${upd.sheetRowNumber}`,
+        values: [[upd.isRecon]],
+      });
+      touched = true;
+    }
+    if (touched) updatedRowCount++;
   }
 
   if (data.length === 0) return 0;

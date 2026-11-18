@@ -33,6 +33,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
   const [paymentMode, setPaymentMode] = useState('');
   const [reconSource, setReconSource] = useState('');
   const [reconSourceId, setReconSourceId] = useState('');
+  const [isRecon, setIsRecon] = useState<'Yes' | 'No'>('No');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,6 +52,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       setPaymentMode(initialRecord.paymentMode);
       setReconSource(initialRecord.reconSource);
       setReconSourceId(initialRecord.reconSourceId);
+      setIsRecon(initialRecord.isRecon === 'Yes' ? 'Yes' : 'No');
     } else {
       const generatedId = generateManualExpenseId(existingIds);
       const today = new Date().toISOString().slice(0, 10);
@@ -69,6 +71,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       setPaymentMode('');
       setReconSource('');
       setReconSourceId('');
+      setIsRecon('No');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, mode, initialRecord]);
@@ -174,6 +177,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       paymentMode: paymentMode.trim(),
       reconSource: reconSource.trim(),
       reconSourceId: reconSourceId.trim(),
+      isRecon: reconSourceId.trim() ? 'Yes' : isRecon,
       rawRowValues: mode === 'edit' ? initialRecord?.rawRowValues : undefined,
       sourceOrigin:
         mode === 'edit' && initialRecord ? initialRecord.sourceOrigin : 'manual',
@@ -469,7 +473,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
                 />
               </div>
 
-              <div className="sm:col-span-2">
+              <div>
                 <label htmlFor="exp-recon-id" className="block text-xs font-medium text-slate-700">
                   Recon Source ID
                 </label>
@@ -477,10 +481,39 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
                   id="exp-recon-id"
                   type="text"
                   value={reconSourceId}
-                  onChange={(e) => setReconSourceId(e.target.value)}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setReconSourceId(next);
+                    if (next.trim() !== '') {
+                      setIsRecon('Yes');
+                    }
+                  }}
                   placeholder="Optional reconciliation reference or transaction ID"
                   className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
                 />
+              </div>
+
+              <div>
+                <label htmlFor="exp-is-recon" className="block text-xs font-medium text-slate-700">
+                  Is_Recon
+                  {reconSourceId.trim() !== '' && (
+                    <span className="ml-1.5 font-normal text-emerald-700">
+                      (Yes while linked)
+                    </span>
+                  )}
+                </label>
+                <select
+                  id="exp-is-recon"
+                  value={reconSourceId.trim() ? 'Yes' : isRecon}
+                  onChange={(e) =>
+                    setIsRecon(e.target.value === 'Yes' ? 'Yes' : 'No')
+                  }
+                  disabled={reconSourceId.trim() !== ''}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none disabled:bg-slate-100 disabled:text-slate-600"
+                >
+                  <option value="No">No</option>
+                  <option value="Yes">Yes</option>
+                </select>
               </div>
             </div>
           </div>

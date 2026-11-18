@@ -273,6 +273,7 @@ export async function processExpenseCsvs(
         paymentMode,
         reconSource,
         reconSourceId,
+        isRecon: reconSourceId ? 'Yes' : 'No',
         sourceOrigin: 'csv',
         sourceFileName: file.fileName,
       });

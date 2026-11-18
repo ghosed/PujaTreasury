@@ -25,6 +25,7 @@ const COMPARE_FIELDS: Array<{ key: keyof ExpenseRecord; label: string }> = [
   { key: 'paymentMode', label: 'Payment Mode' },
   { key: 'reconSource', label: 'Recon Source' },
   { key: 'reconSourceId', label: 'Recon Source ID' },
+  { key: 'isRecon', label: 'Is_Recon' },
 ];
 
 export const ExpenseConfirmModal: React.FC<ExpenseConfirmModalProps> = ({
@@ -261,6 +262,12 @@ export const ExpenseConfirmModal: React.FC<ExpenseConfirmModalProps> = ({
                     {[action.record.reconSource, action.record.reconSourceId]
                       .filter(Boolean)
                       .join(' · ') || '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Is_Recon</dt>
+                  <dd className="mt-0.5 font-medium text-slate-900">
+                    {action.record.isRecon || 'No'}
                   </dd>
                 </div>
               </dl>

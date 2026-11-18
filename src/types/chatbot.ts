@@ -28,6 +28,7 @@ export interface SnapshotExpenseRow {
   description: string;
   reconSource: string;
   reconSourceId: string;
+  isRecon: 'Yes' | 'No';
   isLinked: boolean;
 }
 
@@ -43,6 +44,8 @@ export interface SnapshotBankRow {
   referenceNumber: string;
   source: string;
   targetId: string;
+  isRecon: 'Yes' | 'No';
+  category: string;
   isLinked: boolean;
 }
 

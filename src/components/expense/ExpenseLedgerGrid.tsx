@@ -16,9 +16,11 @@ interface ExpenseLedgerGridProps {
   needsAuth: boolean;
   isLoggingIn: boolean;
   dateSortOrder: 'desc' | 'asc';
+  updatingReconExpId: string | null;
   onSignIn: () => void;
   onToggleDateSort: () => void;
   onEditRecord: (record: ExpenseRecord) => void;
+  onUpdateIsRecon: (record: ExpenseRecord, isRecon: 'Yes' | 'No') => void;
   onTriggerUpload: () => void;
   onOpenManualEntry: () => void;
   onResetFilters: () => void;
@@ -31,9 +33,11 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
   needsAuth,
   isLoggingIn,
   dateSortOrder,
+  updatingReconExpId,
   onSignIn,
   onToggleDateSort,
   onEditRecord,
+  onUpdateIsRecon,
   onTriggerUpload,
   onOpenManualEntry,
   onResetFilters,
@@ -173,6 +177,7 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                 Puja / Payment Mode
               </th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Is_Recon</th>
               <th className="px-4 py-2.5 font-medium whitespace-nowrap">
                 Recon Source / Recon Source_ID
               </th>
@@ -258,6 +263,35 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                         {rec.paymentMode}
                       </div>
                     )}
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    {(() => {
+                      const isLinked = rec.reconSourceId.trim() !== '';
+                      const isLockedYes = isLinked && rec.isRecon === 'Yes';
+                      return (
+                        <select
+                          value={rec.isRecon === 'Yes' ? 'Yes' : 'No'}
+                          onChange={(e) =>
+                            onUpdateIsRecon(rec, e.target.value === 'Yes' ? 'Yes' : 'No')
+                          }
+                          disabled={updatingReconExpId === rec.expId || isLockedYes}
+                          aria-label={`Is_Recon for ${rec.expId}`}
+                          title={
+                            isLockedYes
+                              ? 'Locked to Yes while linked to Bank_Ledger'
+                              : `Set Is_Recon for ${rec.expId}`
+                          }
+                          className={`rounded border bg-white px-2 py-1 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                            rec.isRecon === 'Yes'
+                              ? 'border-emerald-300 text-emerald-800'
+                              : 'border-slate-300 text-slate-700'
+                          }`}
+                        >
+                          <option value="No">No</option>
+                          <option value="Yes">Yes</option>
+                        </select>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-2.5">
                     <div className="text-slate-700 whitespace-nowrap">

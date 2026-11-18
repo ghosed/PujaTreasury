@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Check,
   FileUp,
+  Pencil,
   RotateCcw,
   Trash2,
 } from 'lucide-react';
@@ -19,9 +20,16 @@ interface TransactionGridProps {
   isLoggingIn: boolean;
   account: AccountType;
   dateSortOrder: 'desc' | 'asc';
+  categoryOptions: string[];
+  savingRowKey: string | null;
   onSignIn: () => void;
   onToggleDateSort: () => void;
   onResolveFlag: (flagKey: string, decision: 'kept-distinct' | 'discarded' | 'reset') => void;
+  onEditTransaction: (tx: NormalizedTransaction) => void;
+  onUpdateInlineField: (
+    tx: NormalizedTransaction,
+    patch: { category?: string }
+  ) => void;
   onTriggerUpload: () => void;
   onResetFilters: () => void;
 }
@@ -34,9 +42,13 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
   isLoggingIn,
   account,
   dateSortOrder,
+  categoryOptions,
+  savingRowKey,
   onSignIn,
   onToggleDateSort,
   onResolveFlag,
+  onEditTransaction,
+  onUpdateInlineField,
   onTriggerUpload,
   onResetFilters,
 }) => {
@@ -138,7 +150,9 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
         <table className="w-full border-collapse text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-              <th className="px-4 py-2.5 font-medium whitespace-nowrap">
+              <th className="px-4 py-2.5 font-medium whitespace-nowrap">State / Edit</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Is_Recon</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                 <button
                   type="button"
                   onClick={onToggleDateSort}
@@ -162,9 +176,7 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
               <th className="px-3 py-2.5 font-medium">Description</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Unique ID</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Target ID</th>
-              <th className="px-4 py-2.5 text-right font-medium whitespace-nowrap">
-                State / Action
-              </th>
+              <th className="px-4 py-2.5 font-medium whitespace-nowrap">Category</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -172,6 +184,7 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
               const isFlagged = tx.reviewStatus === 'flagged-duplicate';
               const isDiscarded = tx.reviewStatus === 'discarded';
               const isKeptDistinct = tx.reviewStatus === 'kept-distinct';
+              const reconValue = tx.isRecon === 'Yes' ? 'Yes' : 'No';
 
               return (
                 <tr
@@ -184,7 +197,114 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                         : 'hover:bg-slate-50/80'
                   }`}
                 >
-                  <td className="px-4 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {isFlagged ? (
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => onEditTransaction(tx)}
+                          disabled={savingRowKey === tx.rowKey}
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:text-teal-800 disabled:opacity-50"
+                          title={`Edit ${tx.uniqueId}`}
+                        >
+                          <Pencil className="h-3 w-3" aria-hidden="true" />
+                          Edit
+                        </button>
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-800">
+                          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                          Review
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onResolveFlag(tx.flagKey, 'kept-distinct')}
+                          className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2 py-1 text-[11px] font-medium text-emerald-800 hover:bg-emerald-50"
+                          title="Keep as distinct same-day transaction"
+                        >
+                          <Check className="h-3 w-3" aria-hidden="true" />
+                          Keep
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onResolveFlag(tx.flagKey, 'discarded')}
+                          className="inline-flex items-center gap-1 rounded border border-red-200 bg-white px-2 py-1 text-[11px] font-medium text-red-700 hover:bg-red-50"
+                          title="Discard duplicate"
+                        >
+                          <Trash2 className="h-3 w-3" aria-hidden="true" />
+                          Discard
+                        </button>
+                      </div>
+                    ) : isDiscarded ? (
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled
+                          className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-400 cursor-not-allowed"
+                          title="Undo discard to edit"
+                        >
+                          <Pencil className="h-3 w-3" aria-hidden="true" />
+                          Edit
+                        </button>
+                        <span className="text-[11px] text-slate-400">Discarded</span>
+                        <button
+                          type="button"
+                          onClick={() => onResolveFlag(tx.flagKey, 'reset')}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 hover:text-slate-900"
+                          title="Re-open for review"
+                        >
+                          <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                          Undo
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => onEditTransaction(tx)}
+                          disabled={savingRowKey === tx.rowKey}
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:text-teal-800 disabled:opacity-50"
+                          title={`Edit ${tx.uniqueId}`}
+                        >
+                          <Pencil className="h-3 w-3" aria-hidden="true" />
+                          Edit
+                        </button>
+                        {tx.syncStatus === 'newly-synced' ? (
+                          <span className="text-[11px] font-medium text-emerald-700">Synced</span>
+                        ) : tx.syncStatus === 'already-in-sheet' ? (
+                          <span className="text-[11px] text-slate-500">In Sheet</span>
+                        ) : isKeptDistinct ? (
+                          <div className="inline-flex items-center gap-1.5">
+                            <span className="text-[11px] font-medium text-teal-700">
+                              Ready (Distinct)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onResolveFlag(tx.flagKey, 'reset')}
+                              className="text-[11px] text-slate-500 hover:text-slate-800"
+                              title="Undo decision"
+                            >
+                              <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] font-medium text-slate-700">Ready</span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    <span
+                      className={`text-[12px] font-medium ${
+                        isDiscarded
+                          ? 'text-slate-400'
+                          : reconValue === 'Yes'
+                            ? 'text-emerald-700'
+                            : 'text-slate-600'
+                      }`}
+                    >
+                      {reconValue}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">
                     {tx.date}
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
@@ -242,66 +362,35 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                       <span className="text-slate-400">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                    {isFlagged ? (
-                      <div className="inline-flex items-center justify-end gap-1.5">
-                        <span className="mr-1 inline-flex items-center gap-1 text-[11px] font-medium text-amber-800">
-                          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                          Review
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onResolveFlag(tx.flagKey, 'kept-distinct')}
-                          className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2 py-1 text-[11px] font-medium text-emerald-800 hover:bg-emerald-50"
-                          title="Keep as distinct same-day transaction"
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {(() => {
+                      const currentCat = (tx.category ?? '').trim();
+                      const rowCatOptions =
+                        currentCat &&
+                        !categoryOptions.some(
+                          (c) => c.toLowerCase() === currentCat.toLowerCase()
+                        )
+                          ? [currentCat, ...categoryOptions]
+                          : categoryOptions;
+                      return (
+                        <select
+                          value={currentCat}
+                          onChange={(e) =>
+                            onUpdateInlineField(tx, { category: e.target.value })
+                          }
+                          disabled={isDiscarded || savingRowKey === tx.rowKey}
+                          aria-label={`Category for ${tx.uniqueId}`}
+                          className="max-w-[170px] rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <Check className="h-3 w-3" aria-hidden="true" />
-                          Keep
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onResolveFlag(tx.flagKey, 'discarded')}
-                          className="inline-flex items-center gap-1 rounded border border-red-200 bg-white px-2 py-1 text-[11px] font-medium text-red-700 hover:bg-red-50"
-                          title="Discard duplicate"
-                        >
-                          <Trash2 className="h-3 w-3" aria-hidden="true" />
-                          Discard
-                        </button>
-                      </div>
-                    ) : isDiscarded ? (
-                      <div className="inline-flex items-center gap-2">
-                        <span className="text-[11px] text-slate-400">Discarded</span>
-                        <button
-                          type="button"
-                          onClick={() => onResolveFlag(tx.flagKey, 'reset')}
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 hover:text-slate-900"
-                          title="Re-open for review"
-                        >
-                          <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                          Undo
-                        </button>
-                      </div>
-                    ) : tx.syncStatus === 'newly-synced' ? (
-                      <span className="text-[11px] font-medium text-emerald-700">Synced</span>
-                    ) : tx.syncStatus === 'already-in-sheet' ? (
-                      <span className="text-[11px] text-slate-500">In Sheet</span>
-                    ) : isKeptDistinct ? (
-                      <div className="inline-flex items-center gap-2">
-                        <span className="text-[11px] font-medium text-teal-700">
-                          Ready (Distinct)
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onResolveFlag(tx.flagKey, 'reset')}
-                          className="text-[11px] text-slate-500 hover:text-slate-800"
-                          title="Undo decision"
-                        >
-                          <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-[11px] font-medium text-slate-700">Ready</span>
-                    )}
+                          <option value="">—</option>
+                          {rowCatOptions.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()}
                   </td>
                 </tr>
               );

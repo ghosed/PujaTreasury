@@ -38,6 +38,8 @@ import {
   logout,
 } from './services/firebaseAuth';
 import {
+  BankSheetColumnLayout,
+  batchUpdateBankReconciliation,
   executeSyncPlan,
   fetchSheetLedger,
   prepareSyncPlan,
@@ -49,15 +51,30 @@ import { GoogleSignInButton } from './components/GoogleSignInButton';
 import { ColumnMappingModal } from './components/ColumnMappingModal';
 import { SyncConfirmModal } from './components/SyncConfirmModal';
 import { TransactionGrid } from './components/TransactionGrid';
+import {
+  BankTransactionEditModal,
+  BankTransactionEditPayload,
+} from './components/BankTransactionEditModal';
 import { ReconcileCompleteSummary, ReconcileModal } from './components/ReconcileModal';
 import { ExpenseModule } from './components/expense/ExpenseModule';
 import { ChatbotModule } from './components/chatbot/ChatbotModule';
-import { EXPENSE_SPREADSHEET_ID } from './services/expenseSheets';
+import {
+  batchUpdateExpenseReconIds,
+  EXPENSE_SPREADSHEET_ID,
+  fetchExpenseCategories,
+  fetchExpenseWorkspace,
+} from './services/expenseSheets';
+import { BankLedgerEntry, findLinkedSyncUpdates } from './utils/reconciler';
 
 type ActiveModule = 'statements' | 'expenses' | 'chatbot';
 type StatusFilter = 'all' | 'ready' | 'review' | 'discarded' | 'in-sheet';
 type TypeFilter = 'all' | 'Income' | 'Expense';
-type LinkFilter = 'all' | 'unlinked-expenses' | 'linked-expenses';
+type LinkFilter =
+  | 'all'
+  | 'unrecon-expenses'
+  | 'recon-expenses'
+  | 'unlinked-expenses'
+  | 'linked-expenses';
 
 const EMPTY_SUMMARY: PipelineSummary = {
   totalRawRows: 0,
@@ -129,6 +146,36 @@ export default function App() {
     Regular: false,
   });
 
+  const [sheetLayoutByAccount, setSheetLayoutByAccount] = useState<
+    Record<AccountType, BankSheetColumnLayout>
+  >({
+    Puja: {
+      hasTargetIdHeader: false,
+      targetIdColIndex: 7,
+      hasIsReconHeader: false,
+      isReconColIndex: 8,
+      hasCategoryHeader: false,
+      categoryColIndex: 9,
+    },
+    Regular: {
+      hasTargetIdHeader: false,
+      targetIdColIndex: 7,
+      hasIsReconHeader: false,
+      isReconColIndex: 8,
+      hasCategoryHeader: false,
+      categoryColIndex: 9,
+    },
+  });
+  const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
+  const [bankFieldOverrides, setBankFieldOverrides] = useState<
+    Record<string, Partial<BankTransactionEditPayload>>
+  >({});
+  const [savingBankRowKey, setSavingBankRowKey] = useState<string | null>(null);
+  const [editingBankTx, setEditingBankTx] = useState<NormalizedTransaction | null>(null);
+  const [isSavingBankModal, setIsSavingBankModal] = useState(false);
+  const hasAutoSyncedLinkedRef = useRef(false);
+  const syncLinkedInFlightRef = useRef(false);
+
   const [csvTransactions, setCsvTransactions] = useState<NormalizedTransaction[]>([]);
   const [summary, setSummary] = useState<PipelineSummary>(EMPTY_SUMMARY);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -140,6 +187,7 @@ export default function App() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [linkFilter, setLinkFilter] = useState<LinkFilter>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [dateSortOrder, setDateSortOrder] = useState<'desc' | 'asc'>('desc');
@@ -173,6 +221,17 @@ export default function App() {
           ...prev,
           [targetAccount]: loaded.transactions,
         }));
+        setSheetLayoutByAccount((prev) => ({
+          ...prev,
+          [targetAccount]: {
+            hasTargetIdHeader: loaded.hasTargetIdHeader,
+            targetIdColIndex: loaded.targetIdColIndex,
+            hasIsReconHeader: loaded.hasIsReconHeader,
+            isReconColIndex: loaded.isReconColIndex,
+            hasCategoryHeader: loaded.hasCategoryHeader,
+            categoryColIndex: loaded.categoryColIndex,
+          },
+        }));
         setExistingIdsByAccount((prev) => ({
           ...prev,
           [targetAccount]: loaded.existingIds,
@@ -201,6 +260,138 @@ export default function App() {
     []
   );
 
+  const loadExpenseCategoriesList = useCallback(async (explicitToken?: string) => {
+    const token = explicitToken ?? (await getAccessToken());
+    if (!token) return;
+    try {
+      const cats = await fetchExpenseCategories(token, EXPENSE_SPREADSHEET_ID);
+      setExpenseCategories(cats);
+    } catch {
+      // Non-blocking: Bank ledger still functions if LookUp tab cannot be read
+    }
+  }, []);
+
+  const syncLinkedPairsAcrossSheets = useCallback(
+    async (explicitToken?: string, options?: { silent?: boolean }) => {
+      if (syncLinkedInFlightRef.current) return;
+      const token = explicitToken ?? (await getAccessToken());
+      if (!token) return;
+
+      syncLinkedInFlightRef.current = true;
+      try {
+        const [pujaLoaded, regularLoaded, expenseWs] = await Promise.all([
+          fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Puja'),
+          fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Regular'),
+          fetchExpenseWorkspace(token, EXPENSE_SPREADSHEET_ID),
+        ]);
+
+        const bankEntries: BankLedgerEntry[] = [
+          ...pujaLoaded.transactions.map((tx) => ({ tab: 'Puja' as AccountType, tx })),
+          ...regularLoaded.transactions.map((tx) => ({ tab: 'Regular' as AccountType, tx })),
+        ];
+
+        const plan = findLinkedSyncUpdates(bankEntries, expenseWs.records);
+        const pujaPatches = plan.bankUpdatesByTab.Puja;
+        const regularPatches = plan.bankUpdatesByTab.Regular;
+        const expPatches = plan.expenseUpdates;
+
+        let bankUpdated = 0;
+        let expenseUpdated = 0;
+
+        if (pujaPatches.length > 0) {
+          bankUpdated += await batchUpdateBankReconciliation(
+            token,
+            TARGET_SPREADSHEET_ID,
+            'Puja',
+            pujaLoaded,
+            pujaPatches
+          );
+        }
+        if (regularPatches.length > 0) {
+          bankUpdated += await batchUpdateBankReconciliation(
+            token,
+            TARGET_SPREADSHEET_ID,
+            'Regular',
+            regularLoaded,
+            regularPatches
+          );
+        }
+        if (expPatches.length > 0) {
+          expenseUpdated = await batchUpdateExpenseReconIds(token, expenseWs.meta, expPatches);
+        }
+
+        const applyBankPatches = (
+          rows: NormalizedTransaction[],
+          patches: typeof pujaPatches
+        ): NormalizedTransaction[] => {
+          if (patches.length === 0) return rows;
+          const byRow = new Map(patches.map((p) => [p.sheetRowNumber, p]));
+          return rows.map((row) => {
+            if (!row.sheetRowNumber) return row;
+            const p = byRow.get(row.sheetRowNumber);
+            if (!p) return row;
+            return {
+              ...row,
+              targetId: p.targetId ?? row.targetId,
+              isRecon: p.isRecon ?? row.isRecon,
+              category: p.category ?? row.category,
+            };
+          });
+        };
+
+        const patchedPujaRows = applyBankPatches(pujaLoaded.transactions, pujaPatches);
+        const patchedRegularRows = applyBankPatches(regularLoaded.transactions, regularPatches);
+
+        setSheetTransactionsByAccount({
+          Puja: patchedPujaRows,
+          Regular: patchedRegularRows,
+        });
+        setSheetLayoutByAccount({
+          Puja: {
+            hasTargetIdHeader: pujaLoaded.hasTargetIdHeader || pujaPatches.length > 0,
+            targetIdColIndex: pujaLoaded.targetIdColIndex,
+            hasIsReconHeader: pujaLoaded.hasIsReconHeader || pujaPatches.length > 0,
+            isReconColIndex: pujaLoaded.isReconColIndex,
+            hasCategoryHeader: pujaLoaded.hasCategoryHeader || pujaPatches.length > 0,
+            categoryColIndex: pujaLoaded.categoryColIndex,
+          },
+          Regular: {
+            hasTargetIdHeader: regularLoaded.hasTargetIdHeader || regularPatches.length > 0,
+            targetIdColIndex: regularLoaded.targetIdColIndex,
+            hasIsReconHeader: regularLoaded.hasIsReconHeader || regularPatches.length > 0,
+            isReconColIndex: regularLoaded.isReconColIndex,
+            hasCategoryHeader: regularLoaded.hasCategoryHeader || regularPatches.length > 0,
+            categoryColIndex: regularLoaded.categoryColIndex,
+          },
+        });
+        setExistingIdsByAccount({
+          Puja: pujaLoaded.existingIds,
+          Regular: regularLoaded.existingIds,
+        });
+        setLoadedAccounts({ Puja: true, Regular: true });
+
+        if (expenseWs.lookups.categories.length > 0) {
+          setExpenseCategories(expenseWs.lookups.categories);
+        }
+
+        if (expenseUpdated > 0) {
+          setExpenseRefreshNonce((n) => n + 1);
+        }
+
+        if (!options?.silent && (bankUpdated > 0 || expenseUpdated > 0)) {
+          setReconcileMessage(
+            `Enforced linked reconciliation rule: set Is_Recon="Yes" and synced Category across ${bankUpdated.toLocaleString()} Bank row(s) and ${expenseUpdated.toLocaleString()} Expense row(s).`
+          );
+        }
+      } catch {
+        // Non-blocking background rule enforcement; manual Reconcile remains available
+      } finally {
+        syncLinkedInFlightRef.current = false;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
     const unsubscribe = initAuth(
       (authedUser) => {
@@ -215,12 +406,25 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Automatically load the selected account tab from Google Sheets once authenticated
+  // Automatically load the selected account tab and Expense LookUp categories once authenticated
   useEffect(() => {
     if (!needsAuth && !loadedAccounts[account]) {
       void loadSheetLedger(account);
     }
   }, [account, needsAuth, loadedAccounts, loadSheetLedger]);
+
+  useEffect(() => {
+    if (!needsAuth) {
+      void loadExpenseCategoriesList();
+    }
+  }, [needsAuth, loadExpenseCategoriesList]);
+
+  useEffect(() => {
+    if (!needsAuth && !hasAutoSyncedLinkedRef.current) {
+      hasAutoSyncedLinkedRef.current = true;
+      void syncLinkedPairsAcrossSheets();
+    }
+  }, [needsAuth, syncLinkedPairsAcrossSheets]);
 
   // Re-run normalization & SHA-256 ID pipeline whenever statements, account, or resolutions change
   useEffect(() => {
@@ -255,11 +459,28 @@ export default function App() {
     };
   }, [statements, resolutions, account, newlySyncedIdsByAccount, existingIdsByAccount]);
 
+  const effectiveCsvTransactions = useMemo<NormalizedTransaction[]>(() => {
+    return csvTransactions.map((tx) => {
+      const ov = bankFieldOverrides[tx.uniqueId];
+      if (!ov) return tx;
+      const nextTargetId = ov.targetId ?? tx.targetId ?? '';
+      return {
+        ...tx,
+        description: ov.description ?? tx.description,
+        referenceNumber: ov.referenceNumber ?? tx.referenceNumber,
+        source: ov.source ?? tx.source,
+        targetId: nextTargetId,
+        isRecon: nextTargetId.trim() !== '' ? 'Yes' : (ov.isRecon ?? tx.isRecon ?? 'No'),
+        category: ov.category ?? tx.category ?? '',
+      };
+    });
+  }, [csvTransactions, bankFieldOverrides]);
+
   const transactions = useMemo<NormalizedTransaction[]>(() => {
     const sheetRows = sheetTransactionsByAccount[account];
     const newlySyncedSet = newlySyncedIdsByAccount[account];
 
-    if (csvTransactions.length === 0) {
+    if (effectiveCsvTransactions.length === 0) {
       return sheetRows.map((tx) =>
         newlySyncedSet.has(tx.uniqueId) ? { ...tx, syncStatus: 'newly-synced' as const } : tx
       );
@@ -270,14 +491,14 @@ export default function App() {
       newlySyncedSet.has(tx.uniqueId) ? { ...tx, syncStatus: 'newly-synced' as const } : tx
     );
 
-    for (const csvTx of csvTransactions) {
+    for (const csvTx of effectiveCsvTransactions) {
       if (!sheetIdSet.has(csvTx.uniqueId)) {
         merged.push(csvTx);
       }
     }
 
     return merged;
-  }, [csvTransactions, sheetTransactionsByAccount, newlySyncedIdsByAccount, account]);
+  }, [effectiveCsvTransactions, sheetTransactionsByAccount, newlySyncedIdsByAccount, account]);
 
   const { alreadyInSheetDisplayCount, newlySyncedDisplayCount } = useMemo(() => {
     let alreadyInSheet = 0;
@@ -302,9 +523,14 @@ export default function App() {
     try {
       const res = await googleSignIn();
       if (res) {
+        hasAutoSyncedLinkedRef.current = true;
         setUser(res.user);
         setNeedsAuth(false);
-        await loadSheetLedger(account, res.accessToken);
+        await Promise.all([
+          loadSheetLedger(account, res.accessToken),
+          loadExpenseCategoriesList(res.accessToken),
+        ]);
+        void syncLinkedPairsAcrossSheets(res.accessToken);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Google sign-in failed.';
@@ -316,6 +542,7 @@ export default function App() {
 
   const handleLogout = async () => {
     await logout();
+    hasAutoSyncedLinkedRef.current = false;
     setUser(null);
     setNeedsAuth(true);
     setPendingSyncPlan(null);
@@ -323,6 +550,11 @@ export default function App() {
     setLoadedAccounts({ Puja: false, Regular: false });
     setExistingIdsByAccount({ Puja: new Set(), Regular: new Set() });
     setNewlySyncedIdsByAccount({ Puja: new Set(), Regular: new Set() });
+    setExpenseCategories([]);
+    setBankFieldOverrides({});
+    setSavingBankRowKey(null);
+    setEditingBankTx(null);
+    setIsSavingBankModal(false);
     setSyncResult(null);
     setErrorMessage(null);
   };
@@ -438,6 +670,190 @@ export default function App() {
       return;
     }
     await loadSheetLedger(account, token);
+    await loadExpenseCategoriesList(token);
+    await syncLinkedPairsAcrossSheets(token);
+  };
+
+  const handleUpdateBankInlineField = async (
+    tx: NormalizedTransaction,
+    patch: { category?: string }
+  ) => {
+    if (!tx.sheetRowNumber) {
+      setBankFieldOverrides((prev) => ({
+        ...prev,
+        [tx.uniqueId]: {
+          ...prev[tx.uniqueId],
+          ...patch,
+        },
+      }));
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      setNeedsAuth(true);
+      setErrorMessage('Sign in with Google to save changes to Bank_Ledger.');
+      return;
+    }
+
+    const prevRows = sheetTransactionsByAccount[account];
+    setSavingBankRowKey(tx.rowKey);
+    setErrorMessage(null);
+    setSheetTransactionsByAccount((prev) => ({
+      ...prev,
+      [account]: prev[account].map((row) =>
+        row.rowKey === tx.rowKey
+          ? {
+              ...row,
+              category: patch.category ?? row.category,
+            }
+          : row
+      ),
+    }));
+
+    try {
+      await batchUpdateBankReconciliation(
+        token,
+        TARGET_SPREADSHEET_ID,
+        account,
+        sheetLayoutByAccount[account],
+        [
+          {
+            sheetRowNumber: tx.sheetRowNumber,
+            ...patch,
+          },
+        ]
+      );
+      setSheetLayoutByAccount((prev) => ({
+        ...prev,
+        [account]: {
+          ...prev[account],
+          hasTargetIdHeader: true,
+          hasIsReconHeader: true,
+          hasCategoryHeader: true,
+        },
+      }));
+    } catch (err) {
+      setSheetTransactionsByAccount((prev) => ({
+        ...prev,
+        [account]: prevRows,
+      }));
+      if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
+        clearCachedToken();
+        setNeedsAuth(true);
+        setErrorMessage('Google session expired while saving Bank_Ledger changes. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to update Bank_Ledger cell in Google Sheets.'
+        );
+      }
+    } finally {
+      setSavingBankRowKey(null);
+    }
+  };
+
+  const handleSaveBankTransactionEdit = async (
+    tx: NormalizedTransaction,
+    updates: BankTransactionEditPayload
+  ) => {
+    const normalizedUpdates: BankTransactionEditPayload = {
+      ...updates,
+      isRecon: updates.targetId.trim() !== '' ? 'Yes' : updates.isRecon,
+    };
+
+    if (!tx.sheetRowNumber) {
+      setBankFieldOverrides((prev) => ({
+        ...prev,
+        [tx.uniqueId]: {
+          ...prev[tx.uniqueId],
+          ...normalizedUpdates,
+        },
+      }));
+      setEditingBankTx(null);
+      setReconcileMessage(`Updated staged transaction ${tx.uniqueId}.`);
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      setNeedsAuth(true);
+      setErrorMessage('Sign in with Google to save changes to Bank_Ledger.');
+      return;
+    }
+
+    const prevRows = sheetTransactionsByAccount[account];
+    setIsSavingBankModal(true);
+    setSavingBankRowKey(tx.rowKey);
+    setErrorMessage(null);
+    setSheetTransactionsByAccount((prev) => ({
+      ...prev,
+      [account]: prev[account].map((row) =>
+        row.rowKey === tx.rowKey
+          ? {
+              ...row,
+              description: normalizedUpdates.description,
+              referenceNumber: normalizedUpdates.referenceNumber,
+              source: normalizedUpdates.source,
+              targetId: normalizedUpdates.targetId,
+              isRecon: normalizedUpdates.isRecon,
+              category: normalizedUpdates.category,
+            }
+          : row
+      ),
+    }));
+
+    try {
+      await batchUpdateBankReconciliation(
+        token,
+        TARGET_SPREADSHEET_ID,
+        account,
+        sheetLayoutByAccount[account],
+        [
+          {
+            sheetRowNumber: tx.sheetRowNumber,
+            description: normalizedUpdates.description,
+            referenceNumber: normalizedUpdates.referenceNumber,
+            source: normalizedUpdates.source,
+            targetId: normalizedUpdates.targetId,
+            isRecon: normalizedUpdates.isRecon,
+            category: normalizedUpdates.category,
+          },
+        ]
+      );
+      setSheetLayoutByAccount((prev) => ({
+        ...prev,
+        [account]: {
+          ...prev[account],
+          hasTargetIdHeader: true,
+          hasIsReconHeader: true,
+          hasCategoryHeader: true,
+        },
+      }));
+      setEditingBankTx(null);
+      setReconcileMessage(
+        `Saved changes for ${tx.uniqueId} (row #${tx.sheetRowNumber}) in "${account}".`
+      );
+      if (normalizedUpdates.targetId.trim() !== '') {
+        await syncLinkedPairsAcrossSheets(token);
+      }
+    } catch (err) {
+      setSheetTransactionsByAccount((prev) => ({
+        ...prev,
+        [account]: prevRows,
+      }));
+      if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
+        clearCachedToken();
+        setNeedsAuth(true);
+        setErrorMessage('Google session expired while saving Bank_Ledger changes. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to update Bank_Ledger row in Google Sheets.'
+        );
+      }
+    } finally {
+      setIsSavingBankModal(false);
+      setSavingBankRowKey(null);
+    }
   };
 
   const handleReconcileComplete = async (res: ReconcileCompleteSummary) => {
@@ -448,13 +864,16 @@ export default function App() {
           await loadSheetLedger(tab, token);
         }
       }
+      await loadExpenseCategoriesList(token);
     }
     setExpenseRefreshNonce((n) => n + 1);
     if (res.bankUpdatedCount === 0 && res.expenseUpdatedCount === 0) {
-      setReconcileMessage('Initialized "Target ID" column header in Bank Ledger.');
+      setReconcileMessage(
+        'Initialized reconciliation columns (Target ID, Is_Recon, Category) in Google Sheets.'
+      );
     } else {
       setReconcileMessage(
-        `Reconciled expenses: updated ${res.bankUpdatedCount.toLocaleString()} Bank "Target ID" cell(s) and ${res.expenseUpdatedCount.toLocaleString()} Expense "Recon Source_ID" cell(s).`
+        `Reconciled expenses: updated ${res.bankUpdatedCount.toLocaleString()} Bank row(s) (Target ID, Is_Recon="Yes", Category) and ${res.expenseUpdatedCount.toLocaleString()} Expense row(s) (Recon Source_ID, Is_Recon="Yes").`
       );
     }
   };
@@ -490,7 +909,7 @@ export default function App() {
         token,
         TARGET_SPREADSHEET_ID,
         account,
-        csvTransactions
+        effectiveCsvTransactions
       );
       setExistingIdsByAccount((prev) => ({
         ...prev,
@@ -606,6 +1025,8 @@ export default function App() {
           tx.referenceNumber,
           tx.source,
           tx.targetId ?? '',
+          tx.isRecon ?? 'No',
+          tx.category ?? '',
         ]
           .map(escapeCsv)
           .join(',')
@@ -630,8 +1051,8 @@ export default function App() {
     exportTransactionsCsv(eligible, `${account.toLowerCase()}-normalized-statements.csv`);
   };
 
-  const handleExportUnlinkedExpensesCsv = () => {
-    const sorted = [...unlinkedExpenseSummary.transactions].sort((a, b) => {
+  const handleExportUnreconExpensesCsv = () => {
+    const sorted = [...unreconExpenseSummary.transactions].sort((a, b) => {
       const cmp =
         dateSortOrder === 'desc'
           ? b.date.localeCompare(a.date)
@@ -639,7 +1060,7 @@ export default function App() {
       if (cmp !== 0) return cmp;
       return a.occurrenceIndex - b.occurrenceIndex;
     });
-    exportTransactionsCsv(sorted, `${account.toLowerCase()}-unlinked-expenses.csv`);
+    exportTransactionsCsv(sorted, `${account.toLowerCase()}-unrecon-expenses.csv`);
   };
 
   const availableSources = useMemo(() => {
@@ -649,6 +1070,21 @@ export default function App() {
     }
     return Array.from(set).sort();
   }, [transactions]);
+
+  const availableBankCategories = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of [...expenseCategories, ...transactions.map((t) => t.category ?? '')]) {
+      const trimmed = c.trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(trimmed);
+      }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [expenseCategories, transactions]);
 
   const dateBounds = useMemo(() => {
     let minDate = '';
@@ -726,7 +1162,15 @@ export default function App() {
       if (typeFilter !== 'all' && tx.transactionType !== typeFilter) {
         return false;
       }
-      if (linkFilter === 'unlinked-expenses') {
+      if (linkFilter === 'unrecon-expenses') {
+        if (tx.transactionType !== 'Expense' || (tx.isRecon ?? 'No') === 'Yes') {
+          return false;
+        }
+      } else if (linkFilter === 'recon-expenses') {
+        if (tx.transactionType !== 'Expense' || (tx.isRecon ?? 'No') !== 'Yes') {
+          return false;
+        }
+      } else if (linkFilter === 'unlinked-expenses') {
         if (tx.transactionType !== 'Expense' || Boolean(tx.targetId?.trim())) {
           return false;
         }
@@ -738,6 +1182,12 @@ export default function App() {
       if (sourceFilter !== 'all' && tx.source !== sourceFilter) {
         return false;
       }
+      if (
+        categoryFilter !== 'all' &&
+        (tx.category ?? '').trim().toLowerCase() !== categoryFilter.toLowerCase()
+      ) {
+        return false;
+      }
       if (startDate && tx.date < startDate) {
         return false;
       }
@@ -746,7 +1196,7 @@ export default function App() {
       }
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -766,6 +1216,7 @@ export default function App() {
     typeFilter,
     linkFilter,
     sourceFilter,
+    categoryFilter,
     startDate,
     endDate,
     searchQuery,
@@ -828,7 +1279,7 @@ export default function App() {
       if (endDate && tx.date > endDate) continue;
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
 
@@ -882,10 +1333,10 @@ export default function App() {
     };
   }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
 
-  const unlinkedExpenseSummary = useMemo(() => {
+  const unreconExpenseSummary = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const bySource = new Map<string, { source: string; count: number; totalCents: number }>();
-    const unlinkedTransactions: NormalizedTransaction[] = [];
+    const unreconTransactions: NormalizedTransaction[] = [];
     let totalCount = 0;
     let totalCents = 0;
 
@@ -905,12 +1356,12 @@ export default function App() {
 
       if (typeFilter !== 'all' && tx.transactionType !== typeFilter) continue;
       if (tx.transactionType !== 'Expense') continue;
-      if (tx.targetId && tx.targetId.trim() !== '') continue;
+      if ((tx.isRecon ?? 'No') === 'Yes') continue;
       if (startDate && tx.date < startDate) continue;
       if (endDate && tx.date > endDate) continue;
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
 
@@ -924,7 +1375,7 @@ export default function App() {
       entry.totalCents += absCents;
       bySource.set(tx.source, entry);
 
-      unlinkedTransactions.push(tx);
+      unreconTransactions.push(tx);
       totalCount++;
       totalCents += absCents;
     }
@@ -942,7 +1393,7 @@ export default function App() {
 
     return {
       items,
-      transactions: unlinkedTransactions,
+      transactions: unreconTransactions,
       totalCount,
       totalAmount: totalCents / 100,
       activeSourceCount: items.length,
@@ -959,6 +1410,7 @@ export default function App() {
     setTypeFilter('all');
     setLinkFilter('all');
     setSourceFilter('all');
+    setCategoryFilter('all');
     setStartDate('');
     setEndDate('');
   };
@@ -1074,6 +1526,7 @@ export default function App() {
           refreshNonce={expenseRefreshNonce}
           externalStatusMessage={reconcileMessage}
           onDismissExternalStatus={() => setReconcileMessage(null)}
+          onExpenseMutated={() => void syncLinkedPairsAcrossSheets()}
         />
       ) : activeModule === 'chatbot' ? (
         <ChatbotModule
@@ -1333,7 +1786,7 @@ export default function App() {
                   <span aria-hidden="true">/</span>
                   <span className="font-medium text-slate-800">{account} Tab</span>
                   <span aria-hidden="true">·</span>
-                  <span>8-Column Incremental Upsert</span>
+                  <span>10-Column Incremental Upsert</span>
                 </div>
                 <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   Statement Processing &amp; Ledger Preview
@@ -1351,14 +1804,14 @@ export default function App() {
                   Reconcile Expenses
                 </button>
 
-                {unlinkedExpenseSummary.totalCount > 0 && (
+                {unreconExpenseSummary.totalCount > 0 && (
                   <button
                     type="button"
-                    onClick={handleExportUnlinkedExpensesCsv}
+                    onClick={handleExportUnreconExpensesCsv}
                     className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                   >
                     <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                    Export Unlinked Expenses CSV
+                    Export Unrecon Expenses CSV
                   </button>
                 )}
 
@@ -1565,7 +2018,7 @@ export default function App() {
                           net: 0,
                         };
                         const isSelected =
-                          sourceFilter === sourceName && linkFilter !== 'unlinked-expenses';
+                          sourceFilter === sourceName && linkFilter !== 'unrecon-expenses';
                         const isEmpty = item.count === 0;
 
                         return (
@@ -1573,11 +2026,11 @@ export default function App() {
                             key={`${rowIndex}-${sourceName}`}
                             type="button"
                             onClick={() => {
-                              if (sourceFilter === sourceName && linkFilter !== 'unlinked-expenses') {
+                              if (sourceFilter === sourceName && linkFilter !== 'unrecon-expenses') {
                                 setSourceFilter('all');
                               } else {
                                 setSourceFilter(sourceName);
-                                if (linkFilter === 'unlinked-expenses') {
+                                if (linkFilter === 'unrecon-expenses') {
                                   setLinkFilter('all');
                                 }
                               }
@@ -1645,31 +2098,31 @@ export default function App() {
               </section>
             )}
 
-            {/* Summary by Source (Unlinked Expenses) Cards */}
+            {/* Summary by Source (Unrecon Expenses) Cards */}
             {transactions.length > 0 && (
               <section
-                aria-label="Summary by Source (Unlinked Expenses)"
+                aria-label="Summary by Source (Unrecon Expenses)"
                 className="space-y-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <h2 className="font-semibold text-slate-900">
-                      Summary by Source (Unlinked Expenses)
+                      Summary by Source (Unrecon Expenses)
                     </h2>
                     <span aria-hidden="true" className="text-slate-300">
                       ·
                     </span>
                     <span className="font-mono text-slate-500 tabular-nums">
-                      {unlinkedExpenseSummary.activeSourceCount}{' '}
-                      {unlinkedExpenseSummary.activeSourceCount === 1 ? 'source' : 'sources'}
+                      {unreconExpenseSummary.activeSourceCount}{' '}
+                      {unreconExpenseSummary.activeSourceCount === 1 ? 'source' : 'sources'}
                     </span>
                     <span aria-hidden="true" className="text-slate-300">
                       ·
                     </span>
                     <span className="font-mono text-slate-700 tabular-nums">
-                      {unlinkedExpenseSummary.totalCount.toLocaleString()}{' '}
-                      {unlinkedExpenseSummary.totalCount === 1 ? 'txn' : 'txns'} ·{' '}
-                      {unlinkedExpenseSummary.totalAmount.toLocaleString('en-US', {
+                      {unreconExpenseSummary.totalCount.toLocaleString()}{' '}
+                      {unreconExpenseSummary.totalCount === 1 ? 'txn' : 'txns'} ·{' '}
+                      {unreconExpenseSummary.totalAmount.toLocaleString('en-US', {
                         style: 'currency',
                         currency: 'USD',
                       })}
@@ -1683,35 +2136,35 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3">
-                    {unlinkedExpenseSummary.totalCount > 0 && (
+                    {unreconExpenseSummary.totalCount > 0 && (
                       <>
                         <button
                           type="button"
-                          onClick={handleExportUnlinkedExpensesCsv}
+                          onClick={handleExportUnreconExpensesCsv}
                           className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                         >
                           <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                          Export Unlinked CSV
+                          Export Unrecon CSV
                         </button>
                         <button
                           type="button"
                           onClick={() => {
-                            if (linkFilter === 'unlinked-expenses' && sourceFilter === 'all') {
+                            if (linkFilter === 'unrecon-expenses' && sourceFilter === 'all') {
                               setLinkFilter('all');
                             } else {
-                              setLinkFilter('unlinked-expenses');
+                              setLinkFilter('unrecon-expenses');
                               setSourceFilter('all');
                             }
                           }}
                           className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
                         >
-                          {linkFilter === 'unlinked-expenses' && sourceFilter === 'all'
+                          {linkFilter === 'unrecon-expenses' && sourceFilter === 'all'
                             ? 'Show All Transactions'
-                            : 'Filter Table to Unlinked'}
+                            : 'Filter Table to Unrecon'}
                         </button>
                       </>
                     )}
-                    {linkFilter === 'unlinked-expenses' && sourceFilter !== 'all' && (
+                    {linkFilter === 'unrecon-expenses' && sourceFilter !== 'all' && (
                       <button
                         type="button"
                         onClick={() => {
@@ -1720,36 +2173,36 @@ export default function App() {
                         }}
                         className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
                       >
-                        Reset Unlinked Filter
+                        Reset Unrecon Filter
                       </button>
                     )}
                   </div>
                 </div>
 
-                {unlinkedExpenseSummary.items.length === 0 ? (
+                {unreconExpenseSummary.items.length === 0 ? (
                   <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
-                    All expense transactions in this view are linked to the Expense Ledger.
+                    All expense transactions in this view have Is_Recon = &ldquo;Yes&rdquo;.
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    {unlinkedExpenseSummary.items.map((item) => {
+                    {unreconExpenseSummary.items.map((item) => {
                       const isSelected =
-                        linkFilter === 'unlinked-expenses' && sourceFilter === item.source;
+                        linkFilter === 'unrecon-expenses' && sourceFilter === item.source;
                       const sharePct =
-                        unlinkedExpenseSummary.totalAmount > 0
-                          ? (item.total / unlinkedExpenseSummary.totalAmount) * 100
+                        unreconExpenseSummary.totalAmount > 0
+                          ? (item.total / unreconExpenseSummary.totalAmount) * 100
                           : 0;
 
                       return (
                         <button
-                          key={`unlinked-${item.source}`}
+                          key={`unrecon-${item.source}`}
                           type="button"
                           onClick={() => {
                             if (isSelected) {
                               setLinkFilter('all');
                               setSourceFilter('all');
                             } else {
-                              setLinkFilter('unlinked-expenses');
+                              setLinkFilter('unrecon-expenses');
                               setSourceFilter(item.source);
                             }
                           }}
@@ -1778,8 +2231,8 @@ export default function App() {
                           </div>
 
                           <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] text-slate-500 tabular-nums">
-                            <span>{sharePct.toFixed(1)}% of unlinked</span>
-                            <span>No Target ID</span>
+                            <span>{sharePct.toFixed(1)}% of unrecon</span>
+                            <span>Is_Recon = No</span>
                           </div>
                         </button>
                       );
@@ -2031,10 +2484,12 @@ export default function App() {
                   <select
                     value={linkFilter}
                     onChange={(e) => setLinkFilter(e.target.value as LinkFilter)}
-                    aria-label="Filter by Expense Link Status"
+                    aria-label="Filter by Reconciliation or Link Status"
                     className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
                   >
-                    <option value="all">All Link States</option>
+                    <option value="all">All Recon States</option>
+                    <option value="unrecon-expenses">Unrecon Expenses (Is_Recon = No)</option>
+                    <option value="recon-expenses">Reconciled Expenses (Is_Recon = Yes)</option>
                     <option value="unlinked-expenses">Unlinked Expenses</option>
                     <option value="linked-expenses">Linked Expenses</option>
                   </select>
@@ -2052,6 +2507,22 @@ export default function App() {
                       </option>
                     ))}
                   </select>
+
+                  {availableBankCategories.length > 0 && (
+                    <select
+                      value={categoryFilter}
+                      onChange={(e) => setCategoryFilter(e.target.value)}
+                      aria-label="Filter by Category"
+                      className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                    >
+                      <option value="all">All Categories</option>
+                      {availableBankCategories.map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -2063,11 +2534,15 @@ export default function App() {
                 isLoggingIn={isLoggingIn}
                 account={account}
                 dateSortOrder={dateSortOrder}
+                categoryOptions={availableBankCategories}
+                savingRowKey={savingBankRowKey}
                 onSignIn={handleSignIn}
                 onToggleDateSort={() =>
                   setDateSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
                 }
                 onResolveFlag={handleResolveFlag}
+                onEditTransaction={(tx) => setEditingBankTx(tx)}
+                onUpdateInlineField={handleUpdateBankInlineField}
                 onTriggerUpload={() => fileInputRef.current?.click()}
                 onResetFilters={resetFilters}
               />
@@ -2096,6 +2571,18 @@ export default function App() {
       />
         </>
       )}
+
+      {/* Bank Transaction Edit Modal */}
+      <BankTransactionEditModal
+        isOpen={Boolean(editingBankTx)}
+        transaction={editingBankTx}
+        categoryOptions={availableBankCategories}
+        isSaving={isSavingBankModal}
+        onClose={() => {
+          if (!isSavingBankModal) setEditingBankTx(null);
+        }}
+        onSave={handleSaveBankTransactionEdit}
+      />
 
       {/* Cross-Ledger Bank <-> Expense Reconciliation Modal */}
       <ReconcileModal

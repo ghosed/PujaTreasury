@@ -13,6 +13,8 @@ export interface ExpenseRecord {
   paymentMode: string;
   reconSource: string;
   reconSourceId: string;
+  /** Reconciliation status (`Is_Recon` column: "Yes" or "No") */
+  isRecon: 'Yes' | 'No';
   /** Raw row cells preserved from Google Sheet so updates keep extra columns intact */
   rawRowValues?: Array<string | number>;
   /** Local UI state */
@@ -35,6 +37,8 @@ export interface ExpenseSheetMeta {
   ledgerTabName: string;
   ledgerTabExists: boolean;
   needsHeader: boolean;
+  hasIsReconHeader: boolean;
+  isReconColIndex: number;
   /** Actual header row from the Expense Ledger tab (or canonical headers if empty) */
   columnHeaders: string[];
   lookUpTabName: string | null;

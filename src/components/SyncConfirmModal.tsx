@@ -80,12 +80,12 @@ export const SyncConfirmModal: React.FC<SyncConfirmModalProps> = ({
               {!plan.tabExists ? (
                 <span>
                   Worksheet tab <strong>{plan.tabName}</strong> was not found and will be
-                  created with the 8-column header row before appending records.
+                  created with the 10-column header row before appending records.
                 </span>
               ) : (
                 <span>
                   Worksheet tab <strong>{plan.tabName}</strong> is missing its header row and
-                  will be initialized with the 8-column schema before appending records.
+                  will be initialized with the 10-column schema before appending records.
                 </span>
               )}
             </div>

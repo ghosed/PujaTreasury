@@ -113,6 +113,7 @@ Available SQLite tables (strictly read-only):
    - description TEXT
    - recon_source TEXT
    - recon_source_id TEXT (Bank Unique Transaction ID when linked; empty string '' when unlinked)
+   - is_recon TEXT ('Yes' or 'No')
    - is_linked INTEGER (1 if linked to Bank Ledger, 0 if unlinked)
 
 2. bank_ledger (rows from Bank Statements Google Sheet 'Puja' and 'Regular' tabs)
@@ -127,6 +128,8 @@ Available SQLite tables (strictly read-only):
    - reference_number TEXT
    - source TEXT (e.g. 'Zelle', 'Check', 'Amazon', 'Home Depot', 'CARD9130', 'Deposit', 'Stripe', 'Other', etc.)
    - target_id TEXT (linked Exp_ID when reconciled; empty string '' when unlinked)
+   - is_recon TEXT ('Yes' or 'No')
+   - category TEXT (Expense category copied from Expense_Ledger or manually selected; empty string '' when unset)
    - is_linked INTEGER (1 if linked to Expense Ledger, 0 if unlinked)
 
 3. cat_subcat (mapping from CatSubcat tab)
@@ -153,6 +156,7 @@ function buildInMemoryDatabase(SQL: SqlJsStatic, snapshot: LedgerSnapshotPayload
       description TEXT,
       recon_source TEXT,
       recon_source_id TEXT,
+      is_recon TEXT,
       is_linked INTEGER
     );
     CREATE TABLE bank_ledger (
@@ -167,6 +171,8 @@ function buildInMemoryDatabase(SQL: SqlJsStatic, snapshot: LedgerSnapshotPayload
       reference_number TEXT,
       source TEXT,
       target_id TEXT,
+      is_recon TEXT,
+      category TEXT,
       is_linked INTEGER
     );
     CREATE TABLE cat_subcat (
@@ -179,8 +185,8 @@ function buildInMemoryDatabase(SQL: SqlJsStatic, snapshot: LedgerSnapshotPayload
     INSERT INTO expense_ledger (
       exp_id, puja, ledger_group, date, amount_cents, amount_usd,
       category, sub_category, status, normalized_status,
-      payment_mode, description, recon_source, recon_source_id, is_linked
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      payment_mode, description, recon_source, recon_source_id, is_recon, is_linked
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   db.run('BEGIN TRANSACTION');
@@ -201,6 +207,7 @@ function buildInMemoryDatabase(SQL: SqlJsStatic, snapshot: LedgerSnapshotPayload
         row.description,
         row.reconSource,
         row.reconSourceId,
+        row.isRecon ?? 'No',
         row.isLinked ? 1 : 0,
       ]);
     }
@@ -210,8 +217,8 @@ function buildInMemoryDatabase(SQL: SqlJsStatic, snapshot: LedgerSnapshotPayload
       INSERT INTO bank_ledger (
         unique_id, account_tab, date, amount_cents, abs_amount_cents,
         amount_usd, transaction_type, description, reference_number,
-        source, target_id, is_linked
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source, target_id, is_recon, category, is_linked
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const row of snapshot.bankTransactions) {
       bankStmt.run([
@@ -226,6 +233,8 @@ function buildInMemoryDatabase(SQL: SqlJsStatic, snapshot: LedgerSnapshotPayload
         row.referenceNumber,
         row.source,
         row.targetId,
+        row.isRecon ?? 'No',
+        row.category ?? '',
         row.isLinked ? 1 : 0,
       ]);
     }

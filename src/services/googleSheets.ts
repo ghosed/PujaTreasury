@@ -22,6 +22,8 @@ export const SHEET_HEADERS = [
   'Reference #',
   'Source',
   'Target ID',
+  'Is_Recon',
+  'Category',
 ] as const;
 
 export class SheetsApiError extends Error {
@@ -58,6 +60,45 @@ function normalizeHeader(h: string): string {
   return h.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function normalizeIsRecon(raw: unknown): 'Yes' | 'No' {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'yes' || v === 'true' || v === 'y') return 'Yes';
+  return 'No';
+}
+
+function resolveBankExtraColumns(headerRow: Array<string | number>): {
+  hasTargetIdHeader: boolean;
+  targetIdColIndex: number;
+  hasIsReconHeader: boolean;
+  isReconColIndex: number;
+  hasCategoryHeader: boolean;
+  categoryColIndex: number;
+} {
+  const normHeaders = headerRow.map((cell) => normalizeHeader(String(cell ?? '')));
+  let nextAppendIdx = Math.max(headerRow.length, 7);
+
+  const foundTargetIdx = normHeaders.findIndex((h) => h === 'targetid');
+  const hasTargetIdHeader = foundTargetIdx !== -1;
+  const targetIdColIndex = hasTargetIdHeader ? foundTargetIdx : nextAppendIdx++;
+
+  const foundIsReconIdx = normHeaders.findIndex((h) => h === 'isrecon');
+  const hasIsReconHeader = foundIsReconIdx !== -1;
+  const isReconColIndex = hasIsReconHeader ? foundIsReconIdx : nextAppendIdx++;
+
+  const foundCategoryIdx = normHeaders.findIndex((h) => h === 'category');
+  const hasCategoryHeader = foundCategoryIdx !== -1;
+  const categoryColIndex = hasCategoryHeader ? foundCategoryIdx : nextAppendIdx++;
+
+  return {
+    hasTargetIdHeader,
+    targetIdColIndex,
+    hasIsReconHeader,
+    isReconColIndex,
+    hasCategoryHeader,
+    categoryColIndex,
+  };
+}
+
 async function sheetsFetch<T>(
   url: string,
   accessToken: string,
@@ -88,11 +129,18 @@ async function sheetsFetch<T>(
   return (await res.json()) as T;
 }
 
-export interface LoadedSheetLedger {
-  spreadsheetTitle: string;
-  tabExists: boolean;
+export interface BankSheetColumnLayout {
   hasTargetIdHeader: boolean;
   targetIdColIndex: number;
+  hasIsReconHeader: boolean;
+  isReconColIndex: number;
+  hasCategoryHeader: boolean;
+  categoryColIndex: number;
+}
+
+export interface LoadedSheetLedger extends BankSheetColumnLayout {
+  spreadsheetTitle: string;
+  tabExists: boolean;
   transactions: NormalizedTransaction[];
   existingIds: Set<string>;
 }
@@ -122,6 +170,10 @@ export async function fetchSheetLedger(
       tabExists: false,
       hasTargetIdHeader: false,
       targetIdColIndex: 7,
+      hasIsReconHeader: false,
+      isReconColIndex: 8,
+      hasCategoryHeader: false,
+      categoryColIndex: 9,
       transactions,
       existingIds,
     };
@@ -138,8 +190,14 @@ export async function fetchSheetLedger(
 
   const rows = valuesResp.values ?? [];
   let hasHeaderRow = false;
-  let hasTargetIdHeader = false;
-  let targetIdColIndex = 7;
+  let layout: BankSheetColumnLayout = {
+    hasTargetIdHeader: false,
+    targetIdColIndex: 7,
+    hasIsReconHeader: false,
+    isReconColIndex: 8,
+    hasCategoryHeader: false,
+    categoryColIndex: 9,
+  };
 
   if (rows.length > 0) {
     const firstRow = rows[0] ?? [];
@@ -147,15 +205,7 @@ export async function fetchSheetLedger(
     const c1 = normalizeHeader(String(firstRow[1] ?? ''));
     if (c0 === 'uniquetransactionid' || c1 === 'date') {
       hasHeaderRow = true;
-      const foundTargetIdx = firstRow.findIndex(
-        (cell) => normalizeHeader(String(cell ?? '')) === 'targetid'
-      );
-      if (foundTargetIdx !== -1) {
-        hasTargetIdHeader = true;
-        targetIdColIndex = foundTargetIdx;
-      } else {
-        targetIdColIndex = Math.max(firstRow.length, 7);
-      }
+      layout = resolveBankExtraColumns(firstRow);
     }
   }
 
@@ -193,7 +243,13 @@ export async function fetchSheetLedger(
     const referenceNumber = String(row[5] ?? '').trim();
     const rawSource = String(row[6] ?? '').trim();
     const source = rawSource || categorizeSource(description);
-    const targetId = String(row[targetIdColIndex] ?? '').trim();
+    const targetId = String(row[layout.targetIdColIndex] ?? '').trim();
+    const rawIsRecon = layout.hasIsReconHeader ? row[layout.isReconColIndex] : '';
+    const isRecon: 'Yes' | 'No' =
+      String(rawIsRecon ?? '').trim() !== '' ? normalizeIsRecon(rawIsRecon) : 'No';
+    const category = layout.hasCategoryHeader
+      ? String(row[layout.categoryColIndex] ?? '').trim()
+      : '';
     const uniqueId = col0 || `SHEET-${tabName.toUpperCase()}-${i + 1}`;
 
     if (col0) {
@@ -216,6 +272,8 @@ export async function fetchSheetLedger(
       reviewStatus: 'ok',
       syncStatus: 'already-in-sheet',
       targetId,
+      isRecon,
+      category,
       sheetRowNumber: i + 1,
     });
   }
@@ -223,8 +281,7 @@ export async function fetchSheetLedger(
   return {
     spreadsheetTitle,
     tabExists: true,
-    hasTargetIdHeader,
-    targetIdColIndex,
+    ...layout,
     transactions,
     existingIds,
   };
@@ -249,8 +306,14 @@ export async function prepareSyncPlan(
 
   const existingIds = new Set<string>();
   let needsHeader = true;
-  let needsTargetIdHeader = false;
-  let targetIdColIndex = 7;
+  let layout: BankSheetColumnLayout = {
+    hasTargetIdHeader: false,
+    targetIdColIndex: 7,
+    hasIsReconHeader: false,
+    isReconColIndex: 8,
+    hasCategoryHeader: false,
+    categoryColIndex: 9,
+  };
 
   if (tabExists) {
     const safeTab = `'${tabName.replace(/'/g, "''")}'`;
@@ -268,16 +331,7 @@ export async function prepareSyncPlan(
       needsHeader = firstCell !== 'uniquetransactionid';
 
       if (!needsHeader) {
-        const foundTargetIdx = rows[0].findIndex(
-          (cell) => normalizeHeader(String(cell ?? '')) === 'targetid'
-        );
-        if (foundTargetIdx !== -1) {
-          targetIdColIndex = foundTargetIdx;
-          needsTargetIdHeader = false;
-        } else {
-          targetIdColIndex = Math.max(rows[0].length, 7);
-          needsTargetIdHeader = true;
-        }
+        layout = resolveBankExtraColumns(rows[0]);
       }
 
       for (const row of rows) {
@@ -315,8 +369,12 @@ export async function prepareSyncPlan(
       tabName,
       tabExists,
       needsHeader,
-      needsTargetIdHeader,
-      targetIdColIndex,
+      needsTargetIdHeader: !needsHeader && !layout.hasTargetIdHeader,
+      targetIdColIndex: layout.targetIdColIndex,
+      needsIsReconHeader: !needsHeader && !layout.hasIsReconHeader,
+      isReconColIndex: layout.isReconColIndex,
+      needsCategoryHeader: !needsHeader && !layout.hasCategoryHeader,
+      categoryColIndex: layout.categoryColIndex,
       existingIdsCount: existingIds.size,
       toAppend,
       skippedAlreadySynced,
@@ -337,6 +395,10 @@ export async function executeSyncPlan(
     needsHeader,
     needsTargetIdHeader,
     targetIdColIndex = 7,
+    needsIsReconHeader,
+    isReconColIndex = 8,
+    needsCategoryHeader,
+    categoryColIndex = 9,
     toAppend,
     skippedAlreadySynced,
   } = plan;
@@ -362,25 +424,49 @@ export async function executeSyncPlan(
         }),
       }
     );
-  } else if (!needsHeader && needsTargetIdHeader) {
+  } else if (
+    !needsHeader &&
+    (needsTargetIdHeader || needsIsReconHeader || needsCategoryHeader)
+  ) {
     const safeTab = `'${tabName.replace(/'/g, "''")}'`;
-    const colA1 = colIndexToA1(targetIdColIndex);
-    const headerRange = encodeURIComponent(`${safeTab}!${colA1}1`);
-    await sheetsFetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-        spreadsheetId
-      )}/values/${headerRange}?valueInputOption=USER_ENTERED`,
-      accessToken,
-      {
-        method: 'PUT',
-        body: JSON.stringify({
-          majorDimension: 'ROWS',
-          values: [['Target ID']],
-        }),
-      }
-    );
+    const headerData: Array<{ range: string; values: string[][] }> = [];
+    if (needsTargetIdHeader) {
+      headerData.push({
+        range: `${safeTab}!${colIndexToA1(targetIdColIndex)}1`,
+        values: [['Target ID']],
+      });
+    }
+    if (needsIsReconHeader) {
+      headerData.push({
+        range: `${safeTab}!${colIndexToA1(isReconColIndex)}1`,
+        values: [['Is_Recon']],
+      });
+    }
+    if (needsCategoryHeader) {
+      headerData.push({
+        range: `${safeTab}!${colIndexToA1(categoryColIndex)}1`,
+        values: [['Category']],
+      });
+    }
+
+    if (headerData.length > 0) {
+      await sheetsFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+          spreadsheetId
+        )}/values:batchUpdate`,
+        accessToken,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            valueInputOption: 'USER_ENTERED',
+            data: headerData,
+          }),
+        }
+      );
+    }
   }
 
+  const maxColIdx = Math.max(targetIdColIndex, isReconColIndex, categoryColIndex);
   const rowsToWrite: Array<Array<string | number>> = [];
   if (needsHeader) {
     rowsToWrite.push([...SHEET_HEADERS]);
@@ -396,10 +482,12 @@ export async function executeSyncPlan(
       tx.referenceNumber,
       tx.source,
     ];
-    while (row.length < targetIdColIndex) {
+    while (row.length <= maxColIdx) {
       row.push('');
     }
     row[targetIdColIndex] = tx.targetId ?? '';
+    row[isReconColIndex] = tx.isRecon ?? 'No';
+    row[categoryColIndex] = tx.category ?? '';
     rowsToWrite.push(row);
   }
 
@@ -435,53 +523,113 @@ export async function executeSyncPlan(
   };
 }
 
-export interface BankTargetIdUpdate {
+export interface BankReconcileRowUpdate {
   sheetRowNumber: number;
-  targetId: string;
+  description?: string;
+  referenceNumber?: string;
+  source?: string;
+  targetId?: string;
+  isRecon?: 'Yes' | 'No';
+  category?: string;
 }
 
-export async function batchUpdateBankTargetIds(
+export async function batchUpdateBankReconciliation(
   accessToken: string,
   spreadsheetId: string,
   tabName: AccountType,
-  targetIdColIndex: number,
-  ensureTargetIdHeader: boolean,
-  updates: BankTargetIdUpdate[]
+  layout: BankSheetColumnLayout,
+  updates: BankReconcileRowUpdate[]
 ): Promise<number> {
-  const colA1 = colIndexToA1(targetIdColIndex);
   const safeTab = `'${tabName.replace(/'/g, "''")}'`;
   const data: Array<{ range: string; values: string[][] }> = [];
 
-  if (ensureTargetIdHeader) {
+  if (!layout.hasTargetIdHeader) {
     data.push({
-      range: `${safeTab}!${colA1}1`,
+      range: `${safeTab}!${colIndexToA1(layout.targetIdColIndex)}1`,
       values: [['Target ID']],
     });
   }
+  if (!layout.hasIsReconHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(layout.isReconColIndex)}1`,
+      values: [['Is_Recon']],
+    });
+  }
+  if (!layout.hasCategoryHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(layout.categoryColIndex)}1`,
+      values: [['Category']],
+    });
+  }
 
+  let rowUpdatesCount = 0;
   for (const upd of updates) {
     if (!upd.sheetRowNumber || upd.sheetRowNumber < 1) continue;
-    data.push({
-      range: `${safeTab}!${colA1}${upd.sheetRowNumber}`,
-      values: [[upd.targetId]],
-    });
+    let touched = false;
+    if (upd.description !== undefined) {
+      data.push({
+        range: `${safeTab}!E${upd.sheetRowNumber}`,
+        values: [[upd.description]],
+      });
+      touched = true;
+    }
+    if (upd.referenceNumber !== undefined) {
+      data.push({
+        range: `${safeTab}!F${upd.sheetRowNumber}`,
+        values: [[upd.referenceNumber]],
+      });
+      touched = true;
+    }
+    if (upd.source !== undefined) {
+      data.push({
+        range: `${safeTab}!G${upd.sheetRowNumber}`,
+        values: [[upd.source]],
+      });
+      touched = true;
+    }
+    if (upd.targetId !== undefined) {
+      data.push({
+        range: `${safeTab}!${colIndexToA1(layout.targetIdColIndex)}${upd.sheetRowNumber}`,
+        values: [[upd.targetId]],
+      });
+      touched = true;
+    }
+    if (upd.isRecon !== undefined) {
+      data.push({
+        range: `${safeTab}!${colIndexToA1(layout.isReconColIndex)}${upd.sheetRowNumber}`,
+        values: [[upd.isRecon]],
+      });
+      touched = true;
+    }
+    if (upd.category !== undefined) {
+      data.push({
+        range: `${safeTab}!${colIndexToA1(layout.categoryColIndex)}${upd.sheetRowNumber}`,
+        values: [[upd.category]],
+      });
+      touched = true;
+    }
+    if (touched) rowUpdatesCount++;
   }
 
   if (data.length === 0) return 0;
 
-  await sheetsFetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
-      spreadsheetId
-    )}/values:batchUpdate`,
-    accessToken,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        valueInputOption: 'USER_ENTERED',
-        data,
-      }),
-    }
-  );
+  const CHUNK_SIZE = 1000;
+  for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+    const chunk = data.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'USER_ENTERED',
+          data: chunk,
+        }),
+      }
+    );
+  }
 
-  return updates.length;
+  return rowUpdatesCount;
 }

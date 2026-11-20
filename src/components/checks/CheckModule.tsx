@@ -25,8 +25,13 @@ import {
   RawExtractedCheck,
   UploadedCheckFile,
 } from '../../types/check';
-import { processScannedCheckFiles } from '../../utils/checkProcessor';
 import {
+  buildCheckUniqueId,
+  isValid12CharUniqueId,
+  processScannedCheckFiles,
+} from '../../utils/checkProcessor';
+import {
+  batchUpdateCheckUniqueIds,
   CANONICAL_CHECK_HEADERS,
   CHECK_SPREADSHEET_ID,
   executeCheckSyncPlan,
@@ -37,7 +42,7 @@ import {
 } from '../../services/checkSheets';
 import { SheetsApiError } from '../../services/googleSheets';
 import { clearCachedToken, getAccessToken } from '../../services/firebaseAuth';
-import { CheckGrid } from './CheckGrid';
+import { CheckGrid, CheckSortField } from './CheckGrid';
 import { CheckEntryModal } from './CheckEntryModal';
 import { CheckSyncConfirmModal } from './CheckSyncConfirmModal';
 
@@ -132,6 +137,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
   const [clearQueueAfterSync, setClearQueueAfterSync] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isPreparingSync, setIsPreparingSync] = useState(false);
+  const [isMigratingIds, setIsMigratingIds] = useState(false);
   const [isSavingModal, setIsSavingModal] = useState(false);
   const [updatingReconKey, setUpdatingReconKey] = useState<string | null>(null);
 
@@ -146,7 +152,8 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [dateSortOrder, setDateSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [sortField, setSortField] = useState<CheckSortField>('date');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
   const loadCheckLedger = useCallback(
     async (explicitToken?: string) => {
@@ -405,7 +412,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       if (endDate && (!rec.date || rec.date > endDate)) return false;
 
       if (q) {
-        const hay = `${rec.uniqueId} ${rec.checkNumber} ${rec.bank} ${rec.paidTo} ${rec.paidBy} ${rec.memo} ${rec.transactionType}`.toLowerCase();
+        const hay = `${rec.uniqueId} ${rec.checkNumber} ${rec.routingNumber} ${rec.bank} ${rec.paidTo} ${rec.paidBy} ${rec.memo} ${rec.transactionType}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
 
@@ -413,10 +420,27 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     });
 
     return [...filtered].sort((a, b) => {
+      if (sortField === 'checkNumber') {
+        const chkA = a.checkNumber.trim();
+        const chkB = b.checkNumber.trim();
+        if (!chkA && chkB) return 1;
+        if (chkA && !chkB) return -1;
+        if (chkA !== chkB) {
+          const cmp = chkA.localeCompare(chkB, undefined, {
+            numeric: true,
+            sensitivity: 'base',
+          });
+          if (cmp !== 0) {
+            return sortOrder === 'asc' ? cmp : -cmp;
+          }
+        }
+        return b.date.localeCompare(a.date);
+      }
+
       if (a.date !== b.date) {
         if (!a.date) return 1;
         if (!b.date) return -1;
-        return dateSortOrder === 'desc'
+        return sortOrder === 'desc'
           ? b.date.localeCompare(a.date)
           : a.date.localeCompare(b.date);
       }
@@ -430,8 +454,37 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     startDate,
     endDate,
     searchQuery,
-    dateSortOrder,
+    sortField,
+    sortOrder,
   ]);
+
+  const legacySheetUpdates = useMemo(() => {
+    const updates: Array<{ sheetRowNumber: number; uniqueId: string }> = [];
+    for (const rec of sheetRecords) {
+      if (!rec.sheetRowNumber) continue;
+      if (!isValid12CharUniqueId(rec.uniqueId)) {
+        const hashedId = buildCheckUniqueId(
+          rec.checkNumber,
+          rec.routingNumber,
+          rec.date,
+          rec.bank
+        );
+        if (hashedId !== rec.uniqueId) {
+          updates.push({ sheetRowNumber: rec.sheetRowNumber, uniqueId: hashedId });
+        }
+      }
+    }
+    return updates;
+  }, [sheetRecords]);
+
+  const handleToggleSort = (field: CheckSortField) => {
+    if (sortField === field) {
+      setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortField(field);
+      setSortOrder(field === 'checkNumber' ? 'asc' : 'desc');
+    }
+  };
 
   // Metrics excluding skipped duplicate copies
   const kpiMetrics = useMemo(() => {
@@ -596,6 +649,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         ...prev,
         [original.rowKey]: {
           checkNumber: nextRecord.checkNumber,
+          routingNumber: nextRecord.routingNumber,
           bank: nextRecord.bank,
           date: nextRecord.date,
           amount: nextRecord.amount,
@@ -643,6 +697,39 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       }
     } finally {
       setIsSavingModal(false);
+    }
+  };
+
+  const handleReplaceLegacyUniqueIds = async () => {
+    if (!sheetMeta || legacySheetUpdates.length === 0) return;
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      return;
+    }
+
+    setIsMigratingIds(true);
+    setErrorMessage(null);
+    try {
+      const count = await batchUpdateCheckUniqueIds(token, sheetMeta, legacySheetUpdates);
+      await loadCheckLedger(token);
+      setStatusMessage(
+        `Replaced ${count} legacy Column A Unique ${
+          count === 1 ? 'ID' : 'IDs'
+        } with deterministic 12-character alphanumeric hashes.`
+      );
+    } catch (err) {
+      if (err instanceof SheetsApiError && err.status === 401) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to update Column A Unique IDs.'
+        );
+      }
+    } finally {
+      setIsMigratingIds(false);
     }
   };
 
@@ -710,6 +797,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         rec.memo,
         rec.transactionType,
         rec.isRecon,
+        rec.routingNumber,
         rec.sourceOrigin === 'sheet' ? 'Check_Ledger' : rec.sourceFileName || 'Scanned',
       ]
         .map(csvCell)
@@ -1073,6 +1161,29 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
             </div>
           )}
 
+          {legacySheetUpdates.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
+                <span>
+                  <strong>{legacySheetUpdates.length}</strong> existing{' '}
+                  {legacySheetUpdates.length === 1 ? 'row in Check_Ledger uses' : 'rows in Check_Ledger use'}{' '}
+                  the legacy long Column A Unique ID. Replace them with deterministic 12-character alphanumeric hashes.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleReplaceLegacyUniqueIds()}
+                disabled={isMigratingIds || needsAuth}
+                className="rounded-md bg-amber-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+              >
+                {isMigratingIds
+                  ? 'Updating Unique IDs...'
+                  : `Replace ${legacySheetUpdates.length} Legacy Unique IDs`}
+              </button>
+            </div>
+          )}
+
           {scanPipeline.duplicateChecks.length > 0 && (
             <div className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
               <div className="flex items-center gap-2">
@@ -1295,12 +1406,11 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
               isLoading={isLoadingSheet}
               needsAuth={needsAuth}
               isLoggingIn={isLoggingIn}
-              dateSortOrder={dateSortOrder}
+              sortField={sortField}
+              sortOrder={sortOrder}
               updatingReconKey={updatingReconKey}
               onSignIn={onSignIn}
-              onToggleDateSort={() =>
-                setDateSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
-              }
+              onToggleSort={handleToggleSort}
               onEditRecord={(rec) =>
                 setEntryModalState({
                   isOpen: true,

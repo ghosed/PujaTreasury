@@ -95,6 +95,15 @@ function parseAmountNumber(raw: unknown): number {
   return Math.round(Math.abs(n) * 100) / 100;
 }
 
+function normalizeRoutingNumberOutput(raw: unknown): string {
+  const str = String(raw ?? '').trim();
+  if (!str) return '';
+  const nineDigitMatch = /\d{9}/.exec(str.replace(/[\s-]+/g, ''));
+  if (nineDigitMatch) return nineDigitMatch[0];
+  const digits = str.replace(/\D/g, '');
+  return digits.slice(0, 9);
+}
+
 async function generateWithRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -149,14 +158,15 @@ export async function scanCheckDocument(
           {
             text: `Inspect every page and every check copy visible in this document (${req.fileName}).
 A single image or PDF page may contain 1, 2, 3, or multiple distinct checks (or duplicate copies of the same check).
-For EACH check front visible in the document, extract these 7 fields accurately:
+For EACH check front visible in the document, extract these 8 fields accurately:
 1. checkNumber: The check number (usually top-right corner and/or MICR bottom line; digits/alphanumeric only, no "#" prefix).
-2. bank: The issuing bank name printed on the check (e.g., "Chase Bank", "Bank of America", "Wells Fargo", "Citibank", "Zions Bank", etc.).
-3. date: The date written on the check, formatted as YYYY-MM-DD whenever readable.
-4. amount: The numeric dollar amount on the check (e.g., 250.00). Cross-verify the numeric box ($...) against the written amount line if helpful.
-5. paidTo: The payee name on the "PAY TO THE ORDER OF" line.
-6. paidBy: The payer / account holder name printed in the TOP-LEFT corner of the check (e.g., "Houston Durgabari Society" or the individual/company name).
-7. memo: The text written in the "MEMO" or "FOR" field in the BOTTOM-LEFT corner of the check (empty string "" if blank).
+2. routingNumber: The 9-digit MICR ABA routing number printed at the bottom-left of the check between the MICR transit symbols (e.g., ⑆111000614⑆ -> "111000614", 9 digits only; return "" if completely absent or illegible). Do NOT confuse with the account number or check number.
+3. bank: The issuing bank name printed on the check (e.g., "Chase Bank", "Bank of America", "Wells Fargo", "Citibank", "Zions Bank", etc.).
+4. date: The date written on the check, formatted as YYYY-MM-DD whenever readable.
+5. amount: The numeric dollar amount on the check (e.g., 250.00). Cross-verify the numeric box ($...) against the written amount line if helpful.
+6. paidTo: The payee name on the "PAY TO THE ORDER OF" line.
+7. paidBy: The payer / account holder name printed in the TOP-LEFT corner of the check (e.g., "Houston Durgabari Society" or the individual/company name).
+8. memo: The text written in the "MEMO" or "FOR" field in the BOTTOM-LEFT corner of the check (empty string "" if blank).
 
 Ignore check backs/endorsement-only images that do not contain a check front, unless no front exists. If multiple checks appear, return every single check front in order of appearance.`,
           },
@@ -164,7 +174,7 @@ Ignore check backs/endorsement-only images that do not contain a check front, un
       },
       config: {
         systemInstruction:
-          'You are an accurate financial document check OCR extractor. Return strictly valid JSON matching the schema. Never invent amounts, check numbers, or names not present in the document.',
+          'You are an accurate financial document check OCR extractor. Return strictly valid JSON matching the schema. Never invent amounts, check numbers, MICR routing numbers, or names not present in the document.',
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: 'application/json',
         responseSchema: {
@@ -179,6 +189,10 @@ Ignore check backs/endorsement-only images that do not contain a check front, un
                   checkNumber: {
                     type: Type.STRING,
                     description: 'Check number without leading #.',
+                  },
+                  routingNumber: {
+                    type: Type.STRING,
+                    description: '9-digit MICR ABA routing number from the bottom-left MICR line, digits only.',
                   },
                   bank: {
                     type: Type.STRING,
@@ -207,6 +221,7 @@ Ignore check backs/endorsement-only images that do not contain a check front, un
                 },
                 required: [
                   'checkNumber',
+                  'routingNumber',
                   'bank',
                   'date',
                   'amount',
@@ -237,6 +252,7 @@ Ignore check backs/endorsement-only images that do not contain a check front, un
   const checks: RawExtractedCheck[] = rawChecks
     .map((item) => ({
       checkNumber: String(item.checkNumber ?? '').trim().replace(/^#/, ''),
+      routingNumber: normalizeRoutingNumberOutput(item.routingNumber),
       bank: String(item.bank ?? '').trim(),
       date: normalizeCheckDateOutput(String(item.date ?? '')),
       amount: parseAmountNumber(item.amount),

@@ -2,6 +2,7 @@ export type CheckTransactionType = 'Income' | 'Expense';
 
 export interface RawExtractedCheck {
   checkNumber: string;
+  routingNumber: string;
   bank: string;
   date: string;
   amount: number;
@@ -14,7 +15,9 @@ export interface CheckRecord {
   rowKey: string;
   uniqueId: string;
   canonicalKey: string;
+  routingKey?: string;
   checkNumber: string;
+  routingNumber: string;
   bank: string;
   date: string;
   amount: number;
@@ -57,8 +60,10 @@ export interface CheckSheetMeta {
   needsHeader: boolean;
   hasTransactionTypeHeader: boolean;
   hasIsReconHeader: boolean;
+  hasRoutingNumberHeader: boolean;
   transactionTypeColIndex: number;
   isReconColIndex: number;
+  routingNumberColIndex: number;
   columnHeaders: string[];
 }
 

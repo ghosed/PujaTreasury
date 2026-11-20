@@ -3,9 +3,11 @@ import { FileSpreadsheet, X } from 'lucide-react';
 import { CheckRecord, CheckTransactionType } from '../../types/check';
 import {
   buildCheckCanonicalKey,
+  buildCheckRoutingKey,
   buildCheckUniqueId,
   deriveCheckTransactionType,
   normalizeCheckDate,
+  normalizeRoutingNumber,
 } from '../../utils/checkProcessor';
 
 interface CheckEntryModalProps {
@@ -26,6 +28,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
   onSave,
 }) => {
   const [checkNumber, setCheckNumber] = useState('');
+  const [routingNumber, setRoutingNumber] = useState('');
   const [bank, setBank] = useState('');
   const [date, setDate] = useState('');
   const [amount, setAmount] = useState('');
@@ -41,6 +44,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
     setValidationError(null);
     if (mode === 'edit' && record) {
       setCheckNumber(record.checkNumber);
+      setRoutingNumber(record.routingNumber || '');
       setBank(record.bank);
       setDate(record.date);
       setAmount(record.amount > 0 ? record.amount.toFixed(2) : '');
@@ -52,6 +56,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
     } else {
       const today = new Date().toISOString().slice(0, 10);
       setCheckNumber('');
+      setRoutingNumber('');
       setBank('');
       setDate(today);
       setAmount('');
@@ -65,10 +70,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
 
   if (!isOpen) return null;
 
-  const previewUniqueId =
-    mode === 'edit' && record?.sourceOrigin === 'sheet'
-      ? record.uniqueId
-      : buildCheckUniqueId(checkNumber, bank, date);
+  const previewUniqueId = buildCheckUniqueId(checkNumber, routingNumber, date, bank);
 
   const handlePaidByChange = (nextPaidBy: string) => {
     setPaidBy(nextPaidBy);
@@ -78,12 +80,17 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedCheck = checkNumber.trim().replace(/^#/, '');
+    const cleanRouting = normalizeRoutingNumber(routingNumber);
     const trimmedBank = bank.trim();
     const normDate = normalizeCheckDate(date);
     const parsedAmount = Number.parseFloat(amount.replace(/[$,\s]/g, ''));
 
     if (!trimmedCheck) {
       setValidationError('Check Number is required.');
+      return;
+    }
+    if (routingNumber.trim() && cleanRouting.length !== 9) {
+      setValidationError('MICR Routing Number must be exactly 9 digits (or leave blank if unavailable).');
       return;
     }
     if (!trimmedBank) {
@@ -100,10 +107,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
     }
 
     const amountCents = Math.round(Math.abs(parsedAmount) * 100);
-    const nextUniqueId =
-      mode === 'edit' && record?.sourceOrigin === 'sheet'
-        ? record.uniqueId
-        : buildCheckUniqueId(trimmedCheck, trimmedBank, normDate);
+    const nextUniqueId = buildCheckUniqueId(trimmedCheck, cleanRouting, normDate, trimmedBank);
 
     const nextRecord: CheckRecord = {
       rowKey:
@@ -111,7 +115,9 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
         `manual-check-${nextUniqueId}-${crypto.randomUUID().slice(0, 8)}`,
       uniqueId: nextUniqueId,
       canonicalKey: buildCheckCanonicalKey(trimmedCheck, trimmedBank, normDate),
+      routingKey: buildCheckRoutingKey(trimmedCheck, cleanRouting, normDate),
       checkNumber: trimmedCheck,
+      routingNumber: cleanRouting,
       bank: trimmedBank,
       date: normDate,
       amount: amountCents / 100,
@@ -165,10 +171,17 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 p-6">
-          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-2.5">
-            <div className="text-[11px] text-slate-500">Column A · Unique ID</div>
-            <div className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
-              {previewUniqueId}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-4 py-2.5">
+            <div>
+              <div className="text-[11px] text-slate-500">
+                Column A · 12-Char Deterministic Unique ID
+              </div>
+              <div className="mt-0.5 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                {previewUniqueId}
+              </div>
+            </div>
+            <div className="text-[11px] text-slate-500">
+              SHA-256(Date + Check # + 9-Digit MICR Routing #)
             </div>
           </div>
 
@@ -185,6 +198,23 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
                 disabled={isSaving}
                 placeholder="e.g. 1042"
                 required
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="chk-routing" className="block text-xs font-medium text-slate-700">
+                9-Digit MICR Routing #
+              </label>
+              <input
+                id="chk-routing"
+                type="text"
+                inputMode="numeric"
+                maxLength={9}
+                value={routingNumber}
+                onChange={(e) => setRoutingNumber(e.target.value.replace(/\D/g, '').slice(0, 9))}
+                disabled={isSaving}
+                placeholder="e.g. 111000614"
                 className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
               />
             </div>

@@ -98,6 +98,7 @@ export const CheckSyncConfirmModal: React.FC<CheckSyncConfirmModalProps> = ({
                     <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] text-slate-500">
                       <th className="px-3 py-1.5 font-medium whitespace-nowrap">Unique ID</th>
                       <th className="px-3 py-1.5 font-medium whitespace-nowrap">Check #</th>
+                      <th className="px-3 py-1.5 font-medium whitespace-nowrap">Routing #</th>
                       <th className="px-3 py-1.5 font-medium whitespace-nowrap">Bank</th>
                       <th className="px-3 py-1.5 font-medium whitespace-nowrap">Date</th>
                       <th className="px-3 py-1.5 font-medium whitespace-nowrap">Type</th>
@@ -109,11 +110,14 @@ export const CheckSyncConfirmModal: React.FC<CheckSyncConfirmModalProps> = ({
                   <tbody className="divide-y divide-slate-100">
                     {previewRows.map((chk) => (
                       <tr key={chk.rowKey}>
-                        <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 whitespace-nowrap tabular-nums">
+                        <td className="px-3 py-1.5 font-mono text-[11px] text-slate-700 whitespace-nowrap tabular-nums">
                           {chk.uniqueId}
                         </td>
                         <td className="px-3 py-1.5 font-mono text-[11px] whitespace-nowrap tabular-nums">
                           {chk.checkNumber}
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-[11px] text-slate-600 whitespace-nowrap tabular-nums">
+                          {chk.routingNumber || '—'}
                         </td>
                         <td className="max-w-[120px] truncate px-3 py-1.5 text-[11px]">
                           {chk.bank}

@@ -1,7 +1,10 @@
 import React from 'react';
-import { ArrowDown, ArrowUp, FileUp, Pencil, Plus } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, FileUp, Pencil, Plus } from 'lucide-react';
 import { CheckRecord } from '../../types/check';
+import { isValid12CharUniqueId } from '../../utils/checkProcessor';
 import { GoogleSignInButton } from '../GoogleSignInButton';
+
+export type CheckSortField = 'date' | 'checkNumber';
 
 interface CheckGridProps {
   records: CheckRecord[];
@@ -9,10 +12,11 @@ interface CheckGridProps {
   isLoading: boolean;
   needsAuth: boolean;
   isLoggingIn: boolean;
-  dateSortOrder: 'desc' | 'asc';
+  sortField: CheckSortField;
+  sortOrder: 'desc' | 'asc';
   updatingReconKey: string | null;
   onSignIn: () => void;
-  onToggleDateSort: () => void;
+  onToggleSort: (field: CheckSortField) => void;
   onEditRecord: (record: CheckRecord) => void;
   onUpdateIsRecon: (record: CheckRecord, isRecon: 'Yes' | 'No') => void;
   onTriggerUpload: () => void;
@@ -26,10 +30,11 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
   isLoading,
   needsAuth,
   isLoggingIn,
-  dateSortOrder,
+  sortField,
+  sortOrder,
   updatingReconKey,
   onSignIn,
-  onToggleDateSort,
+  onToggleSort,
   onEditRecord,
   onUpdateIsRecon,
   onTriggerUpload,
@@ -91,7 +96,7 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
             </h3>
             <p className="mt-1.5 max-w-md text-xs leading-relaxed text-slate-500">
               Upload single or multi-check images and PDFs from the sidebar to extract check
-              number, bank, date, amount, paid to, paid by, and memo fields.
+              number, 9-digit MICR routing number, bank, date, amount, paid to, paid by, and memo fields.
             </p>
             <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
               <button
@@ -136,6 +141,17 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
     );
   }
 
+  const renderSortIcon = (field: CheckSortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />;
+    }
+    return sortOrder === 'desc' ? (
+      <ArrowDown className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+    ) : (
+      <ArrowUp className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+    );
+  };
+
   return (
     <div>
       <div className="overflow-x-auto">
@@ -147,22 +163,27 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                 <button
                   type="button"
-                  onClick={onToggleDateSort}
+                  onClick={() => onToggleSort('date')}
                   className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-slate-900"
-                  title={`Sorted ${
-                    dateSortOrder === 'desc' ? 'newest first' : 'oldest first'
-                  } (click to toggle)`}
+                  title="Sort by Check Date"
                 >
                   <span>Date</span>
-                  {dateSortOrder === 'desc' ? (
-                    <ArrowDown className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                  ) : (
-                    <ArrowUp className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                  )}
+                  {renderSortIcon('date')}
                 </button>
               </th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Unique ID</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Check #</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                <button
+                  type="button"
+                  onClick={() => onToggleSort('checkNumber')}
+                  className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-slate-900"
+                  title="Sort by Check #"
+                >
+                  <span>Check #</span>
+                  {renderSortIcon('checkNumber')}
+                </button>
+              </th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Routing #</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bank</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Transaction Type</th>
               <th className="px-3 py-2.5 text-right font-medium whitespace-nowrap">Amount</th>
@@ -175,6 +196,7 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
             {records.map((rec) => {
               const isScanned = rec.sourceOrigin === 'scan';
               const isDup = Boolean(rec.isDuplicate);
+              const isLegacyId = !isValid12CharUniqueId(rec.uniqueId);
 
               return (
                 <tr
@@ -246,14 +268,24 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
                   </td>
 
                   <td
-                    className="max-w-[200px] truncate px-3 py-2.5 font-mono text-[11px] text-slate-600 tabular-nums"
-                    title={rec.uniqueId}
+                    className={`max-w-[160px] truncate px-3 py-2.5 font-mono text-[11px] tabular-nums ${
+                      isLegacyId ? 'text-amber-700' : 'text-slate-700'
+                    }`}
+                    title={
+                      isLegacyId
+                        ? `${rec.uniqueId} (Legacy ID — use Replace Legacy Unique IDs to upgrade to 12-char hash)`
+                        : rec.uniqueId
+                    }
                   >
                     {rec.uniqueId}
                   </td>
 
                   <td className="px-3 py-2.5 font-mono text-[12px] text-slate-800 whitespace-nowrap tabular-nums">
                     {rec.checkNumber || '—'}
+                  </td>
+
+                  <td className="px-3 py-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap tabular-nums">
+                    {rec.routingNumber || '—'}
                   </td>
 
                   <td className="max-w-[160px] truncate px-3 py-2.5 text-slate-700" title={rec.bank}>

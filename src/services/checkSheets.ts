@@ -7,9 +7,11 @@ import {
 } from '../types/check';
 import {
   buildCheckCanonicalKey,
+  buildCheckRoutingKey,
   buildCheckUniqueId,
   deriveCheckTransactionType,
   normalizeCheckDate,
+  normalizeRoutingNumber,
 } from '../utils/checkProcessor';
 import { SheetsApiError } from './googleSheets';
 import { parseSignedAmount } from '../utils/statementProcessor';
@@ -27,6 +29,7 @@ export const CANONICAL_CHECK_HEADERS = [
   'Memo / For',
   'Transaction Type',
   'Is_Recon',
+  'Routing Number',
 ] as const;
 
 interface SpreadsheetMetadata {
@@ -100,7 +103,8 @@ type CheckFieldKey =
   | 'paidBy'
   | 'memo'
   | 'transactionType'
-  | 'isRecon';
+  | 'isRecon'
+  | 'routingNumber';
 
 const HEADER_TO_CHECK_FIELD: Record<string, CheckFieldKey> = {
   uniqueid: 'uniqueId',
@@ -129,6 +133,12 @@ const HEADER_TO_CHECK_FIELD: Record<string, CheckFieldKey> = {
   transactiontype: 'transactionType',
   type: 'transactionType',
   isrecon: 'isRecon',
+  routingnumber: 'routingNumber',
+  micrroutingnumber: 'routingNumber',
+  micrrouting: 'routingNumber',
+  routing: 'routingNumber',
+  rtn: 'routingNumber',
+  abarouting: 'routingNumber',
 };
 
 function buildCheckFieldMap(headers: string[]): Map<CheckFieldKey, number> {
@@ -145,14 +155,18 @@ function buildCheckFieldMap(headers: string[]): Map<CheckFieldKey, number> {
 
 function serializeCheckRow(
   record: CheckRecord,
-  meta: Pick<CheckSheetMeta, 'columnHeaders' | 'transactionTypeColIndex' | 'isReconColIndex'>
+  meta: Pick<
+    CheckSheetMeta,
+    'columnHeaders' | 'transactionTypeColIndex' | 'isReconColIndex' | 'routingNumberColIndex'
+  >
 ): Array<string | number> {
   const fieldToIdx = buildCheckFieldMap(meta.columnHeaders);
   const length = Math.max(
     meta.columnHeaders.length,
     CANONICAL_CHECK_HEADERS.length,
     meta.transactionTypeColIndex + 1,
-    meta.isReconColIndex + 1
+    meta.isReconColIndex + 1,
+    meta.routingNumberColIndex + 1
   );
   const row: Array<string | number> = record.rawRowValues
     ? [...record.rawRowValues]
@@ -178,6 +192,7 @@ function serializeCheckRow(
   setField('memo', record.memo, 7);
   setField('transactionType', record.transactionType, meta.transactionTypeColIndex);
   setField('isRecon', record.isRecon || 'No', meta.isReconColIndex);
+  setField('routingNumber', record.routingNumber || '', meta.routingNumberColIndex);
 
   return row;
 }
@@ -261,6 +276,10 @@ export async function fetchCheckLedger(
   const isReconColIndex =
     fieldIdx.get('isRecon') ?? (needsHeader ? 9 : nextExtraIdx++);
 
+  const hasRoutingNumberHeader = needsHeader ? true : fieldIdx.has('routingNumber');
+  const routingNumberColIndex =
+    fieldIdx.get('routingNumber') ?? (needsHeader ? 10 : nextExtraIdx++);
+
   const startRowIdx = needsHeader ? 0 : 1;
   const records: CheckRecord[] = [];
   const existingIds = new Set<string>();
@@ -296,6 +315,9 @@ export async function fetchCheckLedger(
     const paidTo = readStr('paidTo', 5);
     const paidBy = readStr('paidBy', 6);
     const memo = readStr('memo', 7);
+    const routingNumber = hasRoutingNumberHeader
+      ? normalizeRoutingNumber(String(row[routingNumberColIndex] ?? ''))
+      : '';
 
     if (!rawUniqueId && !checkNumber && !paidTo && !paidBy && amount === null) {
       continue;
@@ -315,11 +337,17 @@ export async function fetchCheckLedger(
     const isRecon: 'Yes' | 'No' =
       rawIsRecon !== '' ? normalizeIsRecon(rawIsRecon) : 'No';
 
-    const uniqueId = rawUniqueId || buildCheckUniqueId(checkNumber, bank, date);
+    const deterministicId = buildCheckUniqueId(checkNumber, routingNumber, date, bank);
+    const uniqueId = rawUniqueId || deterministicId;
     const canonicalKey = buildCheckCanonicalKey(checkNumber, bank, date);
+    const routingKey = buildCheckRoutingKey(checkNumber, routingNumber, date);
 
     existingIds.add(uniqueId.toLowerCase());
+    existingIds.add(deterministicId.toLowerCase());
     existingCanonicalKeys.add(canonicalKey);
+    if (routingKey) {
+      existingCanonicalKeys.add(routingKey);
+    }
 
     const safeAmount = amount ?? 0;
     const amountCents = Math.round(safeAmount * 100);
@@ -328,7 +356,9 @@ export async function fetchCheckLedger(
       rowKey: `sheet-check-${i + 1}-${uniqueId}`,
       uniqueId,
       canonicalKey,
+      routingKey,
       checkNumber,
+      routingNumber,
       bank,
       date,
       amount: amountCents / 100,
@@ -353,8 +383,10 @@ export async function fetchCheckLedger(
       needsHeader,
       hasTransactionTypeHeader,
       hasIsReconHeader,
+      hasRoutingNumberHeader,
       transactionTypeColIndex,
       isReconColIndex,
+      routingNumberColIndex,
       columnHeaders,
     },
     records,
@@ -383,6 +415,12 @@ async function ensureCheckExtraHeaders(
       values: [['Is_Recon']],
     });
   }
+  if (!meta.hasRoutingNumberHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(meta.routingNumberColIndex)}1`,
+      values: [['Routing Number']],
+    });
+  }
 
   if (data.length === 0) return;
 
@@ -408,19 +446,27 @@ export async function prepareCheckSyncPlan(
 ): Promise<{ plan: CheckSyncPlan; workspace: LoadedCheckWorkspace }> {
   const workspace = await fetchCheckLedger(accessToken, spreadsheetId);
   const seenIds = new Set<string>(workspace.existingIds);
-  const seenCanonical = new Set<string>(workspace.existingCanonicalKeys);
+  const seenKeys = new Set<string>(workspace.existingCanonicalKeys);
 
   const toAppend: CheckRecord[] = [];
   let skippedDuplicatesCount = 0;
 
   for (const chk of candidateChecks) {
     const idLower = chk.uniqueId.toLowerCase();
-    if (seenIds.has(idLower) || seenCanonical.has(chk.canonicalKey)) {
+    const rKey = chk.routingKey || buildCheckRoutingKey(chk.checkNumber, chk.routingNumber, chk.date);
+    if (
+      seenIds.has(idLower) ||
+      seenKeys.has(chk.canonicalKey) ||
+      (Boolean(rKey) && seenKeys.has(rKey))
+    ) {
       skippedDuplicatesCount++;
       continue;
     }
     seenIds.add(idLower);
-    seenCanonical.add(chk.canonicalKey);
+    seenKeys.add(chk.canonicalKey);
+    if (rKey) {
+      seenKeys.add(rKey);
+    }
     toAppend.push(chk);
   }
 
@@ -524,7 +570,8 @@ export async function updateCheckRecord(
       serializedRow.length,
       meta.columnHeaders.length,
       meta.transactionTypeColIndex + 1,
-      meta.isReconColIndex + 1
+      meta.isReconColIndex + 1,
+      meta.routingNumberColIndex + 1
     ) - 1
   );
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
@@ -545,6 +592,39 @@ export async function updateCheckRecord(
       }),
     }
   );
+}
+
+export async function batchUpdateCheckUniqueIds(
+  accessToken: string,
+  meta: CheckSheetMeta,
+  updates: Array<{ sheetRowNumber: number; uniqueId: string }>
+): Promise<number> {
+  if (updates.length === 0) return 0;
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const fieldIdx = buildCheckFieldMap(meta.columnHeaders);
+  const uniqueIdColA1 = colIndexToA1(fieldIdx.get('uniqueId') ?? 0);
+
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+    const chunk = updates.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'USER_ENTERED',
+          data: chunk.map((u) => ({
+            range: `${safeTab}!${uniqueIdColA1}${u.sheetRowNumber}`,
+            values: [[u.uniqueId]],
+          })),
+        }),
+      }
+    );
+  }
+  return updates.length;
 }
 
 export async function updateCheckIsRecon(

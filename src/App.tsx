@@ -58,15 +58,17 @@ import {
 import { ReconcileCompleteSummary, ReconcileModal } from './components/ReconcileModal';
 import { ExpenseModule } from './components/expense/ExpenseModule';
 import { ChatbotModule } from './components/chatbot/ChatbotModule';
+import { CheckModule } from './components/checks/CheckModule';
 import {
   batchUpdateExpenseReconIds,
   EXPENSE_SPREADSHEET_ID,
   fetchExpenseCategories,
   fetchExpenseWorkspace,
 } from './services/expenseSheets';
+import { CHECK_SPREADSHEET_ID } from './services/checkSheets';
 import { BankLedgerEntry, findLinkedSyncUpdates } from './utils/reconciler';
 
-type ActiveModule = 'statements' | 'expenses' | 'chatbot';
+type ActiveModule = 'statements' | 'expenses' | 'checks' | 'chatbot';
 type StatusFilter = 'all' | 'ready' | 'review' | 'discarded' | 'in-sheet';
 type TypeFilter = 'all' | 'Income' | 'Expense';
 type LinkFilter =
@@ -1454,6 +1456,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveModule('checks')}
+            className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
+              activeModule === 'checks'
+                ? 'text-slate-900 underline underline-offset-4'
+                : ''
+            }`}
+          >
+            Check Ledger
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveModule('chatbot')}
             className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
               activeModule === 'chatbot'
@@ -1479,7 +1492,9 @@ export default function App() {
             href={
               activeModule === 'expenses'
                 ? `https://docs.google.com/spreadsheets/d/${EXPENSE_SPREADSHEET_ID}/edit`
-                : sheetUrl
+                : activeModule === 'checks'
+                  ? `https://docs.google.com/spreadsheets/d/${CHECK_SPREADSHEET_ID}/edit`
+                  : sheetUrl
             }
             target="_blank"
             rel="noopener noreferrer"
@@ -1527,6 +1542,13 @@ export default function App() {
           externalStatusMessage={reconcileMessage}
           onDismissExternalStatus={() => setReconcileMessage(null)}
           onExpenseMutated={() => void syncLinkedPairsAcrossSheets()}
+        />
+      ) : activeModule === 'checks' ? (
+        <CheckModule
+          needsAuth={needsAuth}
+          isLoggingIn={isLoggingIn}
+          onSignIn={handleSignIn}
+          onAuthExpired={() => setNeedsAuth(true)}
         />
       ) : activeModule === 'chatbot' ? (
         <ChatbotModule

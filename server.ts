@@ -3,12 +3,13 @@ import express from 'express';
 import path from 'path';
 import type { ChatApiRequest } from './src/types/chatbot.ts';
 import { formatGeminiError, handleChatRequest } from './server/geminiChat.ts';
+import { type CheckScanRequest, scanCheckDocument } from './server/checkScanner.ts';
 
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
@@ -30,6 +31,27 @@ async function startServer() {
         message: body.message.trim(),
         history: Array.isArray(body.history) ? body.history : [],
         snapshot: body.snapshot,
+      });
+
+      res.json(result);
+    } catch (err) {
+      const { status, message } = formatGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/checks/scan', async (req, res) => {
+    try {
+      const body = req.body as Partial<CheckScanRequest> | undefined;
+      if (!body || typeof body.base64Data !== 'string' || !body.base64Data.trim()) {
+        res.status(400).json({ error: 'Check image or PDF file content is required.' });
+        return;
+      }
+
+      const result = await scanCheckDocument({
+        fileName: typeof body.fileName === 'string' && body.fileName.trim() ? body.fileName.trim() : 'check-upload',
+        mimeType: typeof body.mimeType === 'string' ? body.mimeType : '',
+        base64Data: body.base64Data,
       });
 
       res.json(result);

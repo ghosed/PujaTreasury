@@ -1167,6 +1167,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 href={`https://docs.google.com/spreadsheets/d/${CHECK_SPREADSHEET_ID}/edit`}
                 target="_blank"
                 rel="noopener noreferrer"
+                title="Open Check_Ledger spreadsheet in Google Sheets"
                 className="inline-flex items-center gap-1 text-[11px] font-medium text-teal-700 hover:underline"
               >
                 Open Sheet
@@ -1182,6 +1183,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
               type="button"
               onClick={() => void loadCheckLedger()}
               disabled={isLoadingSheet || needsAuth}
+              title="Reload saved check rows and LookUp categories from Check_Ledger"
               className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
             >
               <RefreshCw
@@ -1230,6 +1232,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   void handleFilesSelected(e.dataTransfer.files);
                 }
               }}
+              title="Upload check images (PNG, JPG, WEBP) or PDFs to extract check fields and auto-categorize"
               className={`mt-3 flex w-full flex-col items-center justify-center rounded-md border border-dashed px-4 py-6 text-center transition-colors ${
                 isDragging
                   ? 'border-teal-700 bg-teal-50/70'
@@ -1252,6 +1255,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   <button
                     type="button"
                     onClick={handleClearQueue}
+                    title="Remove all uploaded files and staged checks from the queue"
                     className="font-medium text-slate-600 hover:text-red-700"
                   >
                     Clear Queue
@@ -1307,6 +1311,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                             <button
                               type="button"
                               onClick={() => void handleRetryFile(file.id)}
+                              title={`Re-run OCR check scan for ${file.fileName}`}
                               className="shrink-0 font-medium text-teal-700 hover:underline"
                             >
                               Retry
@@ -1370,6 +1375,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 scanPipeline.readyChecks.length === 0 ||
                 isPreparingSync
               }
+              title="Run final duplicate check and append ready scanned checks to Check_Ledger"
               className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-teal-700 px-3.5 py-2.5 text-xs font-medium text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 whitespace-nowrap"
             >
               <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1386,29 +1392,16 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         <div className="mx-auto max-w-[1440px] space-y-5">
           {/* Header Row */}
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
+            <div className="min-w-[240px] flex-1">
               <h1 className="text-xl font-bold tracking-tight text-slate-900">Check Ledger</h1>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 max-w-2xl text-xs text-slate-500">
                 Scan single or multi-check images and PDFs, auto-classify Income vs. Expense
                 (Houston Durgabari Society), skip duplicate copies, and sync to Google Sheets{' '}
                 <span className="font-medium text-slate-700">Check_Ledger</span>.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <button
-                type="button"
-                onClick={() => void loadCheckLedger()}
-                disabled={isLoadingSheet || needsAuth}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0"
-              >
-                <RefreshCw
-                  className={`h-3.5 w-3.5 ${isLoadingSheet ? 'animate-spin' : ''}`}
-                  aria-hidden="true"
-                />
-                Refresh Check_Ledger
-              </button>
-
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
               <button
                 type="button"
                 onClick={() =>
@@ -1419,20 +1412,11 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   })
                 }
                 disabled={needsAuth}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0"
+                title="Open manual entry form to add a single check to Check_Ledger"
+                className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3.5 py-2 text-xs font-medium text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0"
               >
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                 Add Check Manually
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExportCsv}
-                disabled={kpiMetrics.totalActive === 0}
-                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0"
-              >
-                <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                Export CSV
               </button>
 
               <button
@@ -1444,6 +1428,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   isAutoCategorizing ||
                   uncategorizedSheetChecks.length === 0
                 }
+                title="Auto-assign LookUp categories to uncategorized Check_Ledger rows using hybrid rules and strict constrained AI for review"
                 className="inline-flex items-center gap-1.5 rounded-md border border-teal-300 bg-teal-50/60 px-3.5 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100/70 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 whitespace-nowrap shrink-0"
               >
                 <Sparkles
@@ -1457,17 +1442,13 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
 
               <button
                 type="button"
-                onClick={() => void handleOpenSyncConfirmation()}
-                disabled={
-                  needsAuth ||
-                  scanningCount > 0 ||
-                  scanPipeline.readyChecks.length === 0 ||
-                  isPreparingSync
-                }
-                className="inline-flex items-center gap-1.5 rounded-md bg-teal-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 whitespace-nowrap shrink-0"
+                onClick={handleExportCsv}
+                disabled={kpiMetrics.totalActive === 0}
+                title="Download the currently filtered active check records as a CSV file"
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap shrink-0"
               >
-                <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
-                Record New Checks ({scanPipeline.readyChecks.length})
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                Export CSV
               </button>
             </div>
           </div>
@@ -1522,6 +1503,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 type="button"
                 onClick={() => void handleReplaceLegacyUniqueIds()}
                 disabled={isMigratingIds || needsAuth}
+                title="Update legacy Column A Unique IDs in Check_Ledger to deterministic 12-character hashes"
                 className="rounded-md bg-amber-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
               >
                 {isMigratingIds
@@ -1546,6 +1528,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 onClick={() =>
                   setOriginFilter((prev) => (prev === 'duplicates' ? 'all' : 'duplicates'))
                 }
+                title="Filter table to inspect or leave duplicate skipped checks"
                 className="font-medium text-amber-900 underline whitespace-nowrap"
               >
                 {originFilter === 'duplicates' ? 'Show All' : 'Inspect Skipped'}
@@ -1753,6 +1736,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 <button
                   type="button"
                   onClick={resetFilters}
+                  title="Reset all active check filters and search text"
                   className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
                   Clear Filters

@@ -1625,33 +1625,6 @@ export default function App() {
           >
             AI Chatbot
           </button>
-          {activeModule === 'statements' && (
-            <button
-              type="button"
-              onClick={() => setStatusFilter('review')}
-              className={`hidden transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 sm:inline ${
-                statusFilter === 'review' ? 'text-slate-900 underline underline-offset-4' : ''
-              }`}
-            >
-              Review Queue
-              {summary.flaggedForReview > 0 ? ` (${summary.flaggedForReview})` : ''}
-            </button>
-          )}
-          <a
-            href={
-              activeModule === 'expenses'
-                ? `https://docs.google.com/spreadsheets/d/${EXPENSE_SPREADSHEET_ID}/edit`
-                : activeModule === 'checks'
-                  ? `https://docs.google.com/spreadsheets/d/${CHECK_SPREADSHEET_ID}/edit`
-                  : sheetUrl
-            }
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hidden items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 md:inline-flex"
-          >
-            Target Sheet
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          </a>
         </nav>
 
         <div className="flex items-center gap-3 shrink-0">
@@ -1736,6 +1709,7 @@ export default function App() {
                       type="button"
                       role="radio"
                       aria-checked={active}
+                      title={`Switch active Bank_Ledger worksheet tab to "${acct}"`}
                       onClick={() => {
                         setAccount(acct);
                         setSyncResult(null);
@@ -1776,6 +1750,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleClearStatements}
+                    title="Remove all uploaded CSV files from the staging queue"
                     className="text-[11px] font-medium text-slate-500 hover:text-red-700 whitespace-nowrap"
                   >
                     Clear All
@@ -1809,6 +1784,7 @@ export default function App() {
                     fileInputRef.current?.click();
                   }
                 }}
+                title="Upload one or more bank statement CSV files to parse and stage for Bank_Ledger"
                 className={`mt-3 flex cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-4 py-5 text-center transition-colors ${
                   isDragging
                     ? 'border-teal-600 bg-teal-50/50'
@@ -1861,6 +1837,7 @@ export default function App() {
                           onClick={() => handleRemoveStatement(stmt.id)}
                           className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-700"
                           aria-label={`Remove ${stmt.fileName}`}
+                          title={`Remove ${stmt.fileName} from the upload queue`}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -1868,6 +1845,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setEditingStatementId(stmt.id)}
+                        title={`Inspect or remap CSV columns for ${stmt.fileName}`}
                         className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 hover:text-teal-700"
                       >
                         <Columns3 className="h-3 w-3" aria-hidden="true" />
@@ -1902,6 +1880,7 @@ export default function App() {
                     isProcessing ||
                     isLoadingSheet
                   }
+                  title={`Deduplicate uploaded CSV rows against "${account}", enrich Check descriptions from Check_Ledger, and append new rows`}
                   className="flex w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 py-2.5 text-xs font-medium text-white transition-colors hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 whitespace-nowrap"
                 >
                   <FileSpreadsheet className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -1914,6 +1893,7 @@ export default function App() {
                   type="button"
                   onClick={handleRefreshSheetLedger}
                   disabled={needsAuth || isLoadingSheet || isPreparingSync || isSyncing}
+                  title={`Reload saved transactions and LookUp categories from the "${account}" tab in Bank_Ledger`}
                   className="flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
                 >
                   <RefreshCw
@@ -1927,6 +1907,7 @@ export default function App() {
                   type="button"
                   onClick={() => setReconcileModalOpen(true)}
                   disabled={needsAuth || isLoadingSheet || isPreparingSync || isSyncing}
+                  title="Match Bank_Ledger transactions against Expense_Ledger items and link Target_ID / Is_Recon"
                   className="flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
                 >
                   <ArrowLeftRight
@@ -1934,6 +1915,26 @@ export default function App() {
                     aria-hidden="true"
                   />
                   Reconcile with Expense Ledger
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('review')}
+                  title="Filter the Bank Statements table to inspect flagged same-day duplicate transactions"
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors whitespace-nowrap ${
+                    statusFilter === 'review'
+                      ? 'border-amber-400 bg-amber-50 text-amber-900'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <AlertTriangle
+                    className={`h-3.5 w-3.5 shrink-0 ${
+                      summary.flaggedForReview > 0 ? 'text-amber-600' : 'text-slate-500'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  Review Duplicates
+                  {summary.flaggedForReview > 0 ? ` (${summary.flaggedForReview})` : ''}
                 </button>
               </div>
 
@@ -1966,20 +1967,22 @@ export default function App() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setReconcileModalOpen(true)}
-                  disabled={needsAuth || isLoadingSheet}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
+                <a
+                  href={sheetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open the Bank_Ledger Google Sheet in a new tab"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
-                  <ArrowLeftRight className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                  Reconcile Expenses
-                </button>
+                  Bank Statement Sheet
+                  <ExternalLink className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                </a>
 
                 {unreconExpenseSummary.totalCount > 0 && (
                   <button
                     type="button"
                     onClick={handleExportUnreconExpensesCsv}
+                    title="Download all unreconciled Bank Expense transactions as a CSV file"
                     className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                   >
                     <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
@@ -1991,6 +1994,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleExportPreviewCsv}
+                    title="Download the currently previewed normalized Bank Statement rows as a CSV file"
                     className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                   >
                     <Download className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2015,6 +2019,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => handleSelectMonth('all')}
+                  title="Clear date filters and show totals across all dates"
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
                     !startDate && !endDate
                       ? 'border-teal-700 bg-teal-50 text-teal-800'
@@ -2627,6 +2632,7 @@ export default function App() {
                     type="button"
                     onClick={() => void handleApplyBankRuleUpdates()}
                     disabled={isApplyingRuleBackfill || needsAuth}
+                    title={`Apply updated Check_Ledger descriptions, Reference #, Source, and Notes rules to existing "${account}" rows in Bank_Ledger`}
                     className="rounded-md bg-amber-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
                   >
                     {isApplyingRuleBackfill

@@ -976,6 +976,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               type="button"
               onClick={() => void loadWorkspace()}
               disabled={needsAuth || isLoadingSheet || isSubmitting}
+              title="Reload saved expense rows, LookUp categories, and CatSubcat mappings from Expense_Ledger"
               className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
             >
               <RefreshCw
@@ -996,6 +997,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 <button
                   type="button"
                   onClick={handleClearCsvs}
+                  title="Remove all uploaded expense CSV files from the staging queue"
                   className="text-[11px] font-medium text-slate-500 hover:text-red-700 whitespace-nowrap"
                 >
                   Clear All
@@ -1033,6 +1035,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                   fileInputRef.current?.click();
                 }
               }}
+              title="Upload one or more expense tracker CSV files to parse and stage for Expense_Ledger"
               className={`mt-3 flex cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-4 py-5 text-center transition-colors ${
                 isDragging
                   ? 'border-teal-600 bg-teal-50/50'
@@ -1085,6 +1088,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                         onClick={() => handleRemoveCsv(f.id)}
                         className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-700"
                         aria-label={`Remove ${f.fileName}`}
+                        title={`Remove ${f.fileName} from the upload queue`}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -1092,6 +1096,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     <button
                       type="button"
                       onClick={() => setEditingCsvId(f.id)}
+                      title={`Inspect or remap CSV columns for ${f.fileName}`}
                       className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 hover:text-teal-700"
                     >
                       <Columns3 className="h-3 w-3" aria-hidden="true" />
@@ -1110,6 +1115,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               disabled={
                 uploadedCsvs.length === 0 || isLoadingSheet || isProcessingCsv || isSubmitting
               }
+              title="Deduplicate staged expense CSV rows by Exp_ID and append new entries to Expense_Ledger"
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 py-2.5 text-xs font-medium text-white transition-colors hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 whitespace-nowrap"
             >
               <FileSpreadsheet className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -1117,24 +1123,27 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             </button>
           </section>
 
-          {/* 03. Option 2: Manual Expense Entry */}
-          <section className="border-t border-slate-200 pt-5">
-            <h2 className="text-xs font-semibold tracking-tight text-slate-900">
-              03. Manual Expense Entry
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Key in an expense item with auto-generated Exp_ID and LookUp dropdowns.
-            </p>
-            <button
-              type="button"
-              onClick={handleOpenManualEntry}
-              disabled={isLoadingSheet || isSubmitting}
-              className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2.5 text-xs font-medium text-slate-800 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
-            >
-              <Plus className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
-              Add Expense Manually
-            </button>
-          </section>
+          {/* 03. Bank Reconciliation */}
+          {onOpenReconcile && (
+            <section className="border-t border-slate-200 pt-5">
+              <h2 className="text-xs font-semibold tracking-tight text-slate-900">
+                03. Bank Reconciliation
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Match Expense_Ledger items against Bank_Ledger transactions and update linked IDs.
+              </p>
+              <button
+                type="button"
+                onClick={onOpenReconcile}
+                disabled={needsAuth || isLoadingSheet || isSubmitting}
+                title="Match Expense_Ledger records with Bank_Ledger transactions and sync Recon_Source_ID / Is_Recon links"
+                className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-300 bg-white px-4 py-2.5 text-xs font-medium text-slate-800 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
+              >
+                <ArrowLeftRight className="h-3.5 w-3.5 shrink-0 text-teal-700" aria-hidden="true" />
+                Reconcile with Bank Ledger
+              </button>
+            </section>
+          )}
         </div>
       </aside>
 
@@ -1159,23 +1168,12 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
-              {onOpenReconcile && (
-                <button
-                  type="button"
-                  onClick={onOpenReconcile}
-                  disabled={needsAuth || isLoadingSheet || isSubmitting}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap"
-                >
-                  <ArrowLeftRight className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
-                  Reconcile with Bank Ledger
-                </button>
-              )}
-
               <button
                 type="button"
                 onClick={handleOpenManualEntry}
                 disabled={isLoadingSheet || isSubmitting}
-                className="inline-flex items-center gap-1.5 rounded-md bg-teal-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-teal-800 disabled:opacity-50 whitespace-nowrap"
+                title="Open manual entry form to add a single expense item with auto-generated Exp_ID"
+                className="inline-flex items-center gap-1.5 rounded-md border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-medium text-red-800 hover:bg-red-100 disabled:opacity-50 whitespace-nowrap"
               >
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                 Add Expense
@@ -1185,6 +1183,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 <button
                   type="button"
                   onClick={handleExportUnreconCsv}
+                  title="Download all unreconciled Expense_Ledger items as a CSV file"
                   className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
                   <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
@@ -1196,6 +1195,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 <button
                   type="button"
                   onClick={handleExportCsv}
+                  title="Download the currently filtered Expense_Ledger rows as a CSV file"
                   className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
                   <Download className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1220,6 +1220,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               <button
                 type="button"
                 onClick={() => handleSelectMonth('all')}
+                title="Clear date filters and show expense totals across all dates"
                 className={`rounded-md border px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
                   !startDate && !endDate
                     ? 'border-teal-700 bg-teal-50 text-teal-800'
@@ -1286,6 +1287,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 <button
                   type="button"
                   onClick={() => handleSelectMonth('all')}
+                  title="Reset From and To date filters"
                   className="text-xs font-medium text-slate-600 hover:text-slate-900 whitespace-nowrap"
                 >
                   Clear

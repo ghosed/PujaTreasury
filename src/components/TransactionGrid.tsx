@@ -20,7 +20,8 @@ interface TransactionGridProps {
   isLoggingIn: boolean;
   account: AccountType;
   dateSortOrder: 'desc' | 'asc';
-  categoryOptions: string[];
+  expenseCategoryOptions: string[];
+  incomeCategoryOptions: string[];
   savingRowKey: string | null;
   onSignIn: () => void;
   onToggleDateSort: () => void;
@@ -42,7 +43,8 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
   isLoggingIn,
   account,
   dateSortOrder,
-  categoryOptions,
+  expenseCategoryOptions,
+  incomeCategoryOptions,
   savingRowKey,
   onSignIn,
   onToggleDateSort,
@@ -176,7 +178,8 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
               <th className="px-3 py-2.5 font-medium">Description</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Unique ID</th>
               <th className="px-3 py-2.5 font-medium whitespace-nowrap">Target ID</th>
-              <th className="px-4 py-2.5 font-medium whitespace-nowrap">Category</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Category</th>
+              <th className="px-4 py-2.5 font-medium whitespace-nowrap">Notes</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -365,13 +368,17 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                   <td className="px-4 py-2.5 whitespace-nowrap">
                     {(() => {
                       const currentCat = (tx.category ?? '').trim();
+                      const typeOptions =
+                        tx.transactionType === 'Income'
+                          ? incomeCategoryOptions
+                          : expenseCategoryOptions;
                       const rowCatOptions =
                         currentCat &&
-                        !categoryOptions.some(
+                        !typeOptions.some(
                           (c) => c.toLowerCase() === currentCat.toLowerCase()
                         )
-                          ? [currentCat, ...categoryOptions]
-                          : categoryOptions;
+                          ? [currentCat, ...typeOptions]
+                          : typeOptions;
                       return (
                         <select
                           value={currentCat}
@@ -391,6 +398,12 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                         </select>
                       );
                     })()}
+                  </td>
+                  <td
+                    className="max-w-[180px] truncate px-4 py-2.5 text-slate-700"
+                    title={tx.notes || undefined}
+                  >
+                    {tx.notes || '—'}
                   </td>
                 </tr>
               );

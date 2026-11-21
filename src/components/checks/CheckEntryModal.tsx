@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { FileSpreadsheet, X } from 'lucide-react';
 import { CheckRecord, CheckTransactionType } from '../../types/check';
 import {
@@ -14,6 +14,8 @@ interface CheckEntryModalProps {
   isOpen: boolean;
   mode: 'create' | 'edit';
   record: CheckRecord | null;
+  expenseCategoryOptions: string[];
+  incomeCategoryOptions: string[];
   isSaving: boolean;
   onClose: () => void;
   onSave: (nextRecord: CheckRecord, original: CheckRecord | null) => Promise<void> | void;
@@ -23,6 +25,8 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
   isOpen,
   mode,
   record,
+  expenseCategoryOptions,
+  incomeCategoryOptions,
   isSaving,
   onClose,
   onSave,
@@ -37,6 +41,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
   const [memo, setMemo] = useState('');
   const [transactionType, setTransactionType] = useState<CheckTransactionType>('Income');
   const [isRecon, setIsRecon] = useState<'Yes' | 'No'>('No');
+  const [category, setCategory] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,6 +58,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
       setMemo(record.memo);
       setTransactionType(record.transactionType);
       setIsRecon(record.isRecon);
+      setCategory((record.category ?? '').trim());
     } else {
       const today = new Date().toISOString().slice(0, 10);
       setCheckNumber('');
@@ -65,8 +71,21 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
       setMemo('');
       setTransactionType('Income');
       setIsRecon('No');
+      setCategory('');
     }
   }, [isOpen, mode, record]);
+
+  const effectiveCategories = useMemo(() => {
+    const base =
+      transactionType === 'Income'
+        ? [...incomeCategoryOptions]
+        : [...expenseCategoryOptions];
+    const trimmed = category.trim();
+    if (trimmed && !base.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
+      base.unshift(trimmed);
+    }
+    return base;
+  }, [transactionType, expenseCategoryOptions, incomeCategoryOptions, category]);
 
   if (!isOpen) return null;
 
@@ -127,6 +146,7 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
       memo: memo.trim(),
       transactionType,
       isRecon,
+      category: category.trim(),
       sourceOrigin: record?.sourceOrigin ?? 'scan',
       sourceFileName: record?.sourceFileName ?? 'Manual Check Entry',
       isDuplicate: false,
@@ -327,6 +347,26 @@ export const CheckEntryModal: React.FC<CheckEntryModalProps> = ({
               >
                 <option value="No">No</option>
                 <option value="Yes">Yes</option>
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="chk-category" className="block text-xs font-medium text-slate-700">
+                Category ({transactionType})
+              </label>
+              <select
+                id="chk-category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                disabled={isSaving}
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+              >
+                <option value="">None / Uncategorized</option>
+                {effectiveCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
               </select>
             </div>
 

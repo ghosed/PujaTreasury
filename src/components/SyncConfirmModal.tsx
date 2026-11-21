@@ -80,12 +80,12 @@ export const SyncConfirmModal: React.FC<SyncConfirmModalProps> = ({
               {!plan.tabExists ? (
                 <span>
                   Worksheet tab <strong>{plan.tabName}</strong> was not found and will be
-                  created with the 10-column header row before appending records.
+                  created with the 11-column header row before appending records.
                 </span>
               ) : (
                 <span>
                   Worksheet tab <strong>{plan.tabName}</strong> is missing its header row and
-                  will be initialized with the 10-column schema before appending records.
+                  will be initialized with the 11-column schema before appending records.
                 </span>
               )}
             </div>
@@ -140,6 +140,8 @@ export const SyncConfirmModal: React.FC<SyncConfirmModalProps> = ({
                       </th>
                       <th className="border-b border-slate-200 px-3 py-2 font-medium">Type</th>
                       <th className="border-b border-slate-200 px-3 py-2 font-medium">Source</th>
+                      <th className="border-b border-slate-200 px-3 py-2 font-medium">Reference #</th>
+                      <th className="border-b border-slate-200 px-3 py-2 font-medium">Notes</th>
                       <th className="border-b border-slate-200 px-3 py-2 font-medium">
                         Description
                       </th>
@@ -166,6 +168,12 @@ export const SyncConfirmModal: React.FC<SyncConfirmModalProps> = ({
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">{tx.transactionType}</td>
                         <td className="px-3 py-2 whitespace-nowrap">{tx.source}</td>
+                        <td className="px-3 py-2 font-mono text-[11px] whitespace-nowrap text-slate-600">
+                          {tx.referenceNumber || '—'}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap text-slate-700">
+                          {tx.notes || '—'}
+                        </td>
                         <td className="max-w-[200px] truncate px-3 py-2 text-slate-600">
                           {tx.description}
                         </td>

@@ -9,6 +9,56 @@ export interface RawExtractedCheck {
   paidTo: string;
   paidBy: string;
   memo: string;
+  category?: string;
+}
+
+export type CheckCategoryMethod =
+  | 'deterministic-exact'
+  | 'deterministic-keyword'
+  | 'historical-memo'
+  | 'historical-counterparty'
+  | 'llm'
+  | 'abstained';
+
+export interface CheckCategorizeInput {
+  id: string;
+  transactionType: CheckTransactionType;
+  amount?: number;
+  memo: string;
+  paidTo: string;
+  paidBy: string;
+}
+
+export interface CheckCategorizeHistoricalExample {
+  transactionType: CheckTransactionType;
+  memo: string;
+  paidTo: string;
+  paidBy: string;
+  category: string;
+}
+
+export interface CheckCategorizeSuggestion {
+  id: string;
+  category: string;
+  confidence: 'high' | 'medium' | 'low';
+  method: CheckCategoryMethod;
+  reason: string;
+}
+
+export interface CheckCategorizeRequest {
+  checks: CheckCategorizeInput[];
+  expenseCategories: string[];
+  incomeCategories: string[];
+  historicalExamples?: CheckCategorizeHistoricalExample[];
+}
+
+export interface CheckCategorizeResponse {
+  results: Array<{
+    id: string;
+    category: string;
+    confidence: 'high' | 'medium' | 'low';
+    reason: string;
+  }>;
 }
 
 export interface CheckRecord {
@@ -27,6 +77,7 @@ export interface CheckRecord {
   memo: string;
   transactionType: CheckTransactionType;
   isRecon: 'Yes' | 'No';
+  category?: string;
   sourceOrigin: 'sheet' | 'scan';
   sourceFileName?: string;
   isDuplicate?: boolean;
@@ -61,9 +112,11 @@ export interface CheckSheetMeta {
   hasTransactionTypeHeader: boolean;
   hasIsReconHeader: boolean;
   hasRoutingNumberHeader: boolean;
+  hasCategoryHeader: boolean;
   transactionTypeColIndex: number;
   isReconColIndex: number;
   routingNumberColIndex: number;
+  categoryColIndex: number;
   columnHeaders: string[];
 }
 

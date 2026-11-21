@@ -1,3 +1,4 @@
+import { CheckRecord } from '../types/check';
 import {
   NormalizedTransaction,
   PipelineSummary,
@@ -136,42 +137,105 @@ export function normalizeCheckNumber(raw?: string): string {
   return cleaned;
 }
 
-export function extractReferenceNumber(description: string, checkNumber?: string): string {
+function extractDirectPayTranId(description: string): string {
+  const match = description.match(
+    /\bTRAN(?:S(?:ACTION)?)?\s*(?:ID|NO\.?|NUMBER)\b\s*[:#-]?\s*([A-Z0-9-]{4,})\b|\bTRAN(?:S(?:ACTION)?)?\s*[:#]\s*([A-Z0-9-]{4,})\b/i
+  );
+  return match ? match[1] || match[2] || '' : '';
+}
+
+export function extractReferenceNumber(
+  description: string,
+  checkNumber?: string,
+  sourceHint?: string
+): string {
   const cleanCheck = normalizeCheckNumber(checkNumber);
   if (cleanCheck) {
     return cleanCheck;
   }
 
-  // 1. Stripe IDs (ch_, pi_, po_, txn_, py_, re_, in_)
-  const stripeMatch = description.match(/\b((?:ch|pi|po|txn|py|re|in)_[A-Za-z0-9]{6,})\b/);
+  const trimmedDesc = description.trim();
+  const isWire =
+    /\b(?:wt|wire|fedwire)\b/i.test(trimmedDesc) ||
+    /\b(?:wt|wire|fedwire)\b/i.test(sourceHint ?? '');
+
+  // 1. WT / WIRE: use the number/code following TRN as Reference #
+  if (isWire) {
+    const trnMatch = trimmedDesc.match(/\bTRN\s*(?:NO\.?)?\s*[:#-]?\s*([A-Z0-9-]{4,})\b/i);
+    if (trnMatch) {
+      return trnMatch[1];
+    }
+  }
+
+  // 1b. Direct Pay-Payment: use the Tran ID as Reference #
+  const isDirectPay =
+    /direct\s*pay[-\s]*payment|\bdirect\s*pay\b/i.test(trimmedDesc) ||
+    /direct\s*pay/i.test(sourceHint ?? '');
+  if (isDirectPay) {
+    const tranId = extractDirectPayTranId(trimmedDesc);
+    if (tranId) {
+      return tranId;
+    }
+  }
+
+  // 2. Descriptions ending with "CARD 7574" or "CARD 9130": use the 16 characters preceding it
+  const cardEndMatch = trimmedDesc.match(/^(.*?)\s*\bCARD\s*(?:7574|9130)\s*$/i);
+  if (cardEndMatch) {
+    const prefix = cardEndMatch[1].trimEnd();
+    const ref16 = prefix.length >= 16 ? prefix.slice(-16).trim() : prefix.trim();
+    if (ref16) {
+      return ref16;
+    }
+  }
+
+  // 3. Deposits: Mobile/eDeposit ("Ref Number :") vs Branch/Store ("BRANCH")
+  const isDeposit =
+    /\b(?:edeposit|mobile\s*(?:check\s*)?dep(?:osit)?|deposit|counter\s*credit)\b/i.test(
+      trimmedDesc
+    ) || /^deposit$/i.test((sourceHint ?? '').trim());
+
+  if (isDeposit) {
+    const depositRefMatch = trimmedDesc.match(
+      /\bRef(?:erence)?\s*(?:Number|Num|No\.?)\s*:\s*([A-Z0-9-]+)\b/i
+    );
+    if (depositRefMatch) {
+      return depositRefMatch[1];
+    }
+    if (/\b(?:branch|store)\b/i.test(trimmedDesc)) {
+      return 'BRANCH';
+    }
+  }
+
+  // 4. Stripe IDs (ch_, pi_, po_, txn_, py_, re_, in_)
+  const stripeMatch = trimmedDesc.match(/\b((?:ch|pi|po|txn|py|re|in)_[A-Za-z0-9]{6,})\b/);
   if (stripeMatch) {
     return stripeMatch[1];
   }
 
-  // 2. Wire / Fed / IMAD / OMAD reference codes
-  const wireMatch = description.match(
+  // 5. Wire / Fed / IMAD / OMAD / SEQ fallback
+  const wireMatch = trimmedDesc.match(
     /\b(?:IMAD|OMAD|FED\s*REF|TRN|SEQ)\s*[:#-]?\s*([A-Z0-9]{6,})\b/i
   );
   if (wireMatch) {
     return wireMatch[1];
   }
 
-  // 3. Explicit Check reference inside description
-  const checkInDesc = description.match(/\b(?:CHECK|CHK)\s*(?:#|NO\.?|NUMBER)?\s*(\d{3,10})\b/i);
+  // 6. Explicit Check reference inside description
+  const checkInDesc = trimmedDesc.match(/\b(?:CHECK|CHK)\s*(?:#|NO\.?|NUMBER)?\s*(\d{3,10})\b/i);
   if (checkInDesc) {
     return checkInDesc[1];
   }
 
-  // 4. Zelle / Bank confirmation, reference, trace, auth, or transaction ID tokens
-  const taggedRef = description.match(
-    /\b(?:CONF(?:IRMATION)?|REF(?:ERENCE)?|TRACE|AUTH|TXN|TRANS(?:ACTION)?|ZELLE\s*ID|ID)\s*(?:#|NO\.?)?\s*[:#-]?\s*([A-Z0-9-]{5,})\b/i
+  // 7. Zelle / Bank confirmation, ref number, reference, trace, auth, tran ID, or transaction ID tokens
+  const taggedRef = trimmedDesc.match(
+    /\b(?:CONF(?:IRMATION)?|REF(?:ERENCE)?(?:\s*NUMBER)?|TRACE|AUTH|TRAN(?:\s*ID)?|TXN(?:\s*ID)?|TRANS(?:ACTION)?(?:\s*ID)?|ZELLE\s*ID|ID)\s*(?:#|NO\.?)?\s*[:#-]?\s*([A-Z0-9-]{5,})\b/i
   );
   if (taggedRef) {
     return taggedRef[1];
   }
 
-  // 5. Standalone hash-prefixed alphanumeric reference (e.g., #JPM99AB12 or #12345678)
-  const hashRef = description.match(/(?:^|\s)#([A-Z0-9]{5,})\b/i);
+  // 8. Standalone hash-prefixed alphanumeric reference (e.g., #JPM99AB12 or #12345678)
+  const hashRef = trimmedDesc.match(/(?:^|\s)#([A-Z0-9]{5,})\b/i);
   if (hashRef) {
     return hashRef[1];
   }
@@ -184,18 +248,19 @@ const SOURCE_RULES: Array<{ label: string; pattern: RegExp }> = [
   { label: 'Stripe', pattern: /\bstripe\b/i },
   { label: 'SumUp', pattern: /\bsumup\b|\bsum\s+up\b/i },
   { label: 'Direct Pay-Payment', pattern: /direct\s*pay[-\s]*payment|\bdirect\s*pay\b/i },
-  { label: 'Amazon', pattern: /\bamazon\b|\bamzn\b/i },
-  { label: 'Home Depot', pattern: /home\s*depot|\bhomedepot\b/i },
-  { label: 'Transfer', pattern: /\bonline\s+transfer\b/i },
-  { label: 'Deposit', pattern: /\bedeposit\b/i },
+  { label: 'WT', pattern: /\b(?:wt|wire|fedwire)\b/i },
+  {
+    label: 'ACC-T',
+    pattern: /\bonline\s+(?:banking\s+)?transfer\b|\baccount\s+transfer\b/i,
+  },
+  { label: 'Deposit', pattern: /\bedeposit\b|\bmobile\s*(?:check\s*)?dep(?:osit)?\b/i },
   { label: 'CARD9130', pattern: /\bcard\s*9130\b/i },
   { label: 'CARD7574', pattern: /\bcard\s*7574\b/i },
-  { label: 'WT', pattern: /\b(?:wt|wire|fedwire)\b/i },
   { label: 'Cash', pattern: /\bcash\b/i },
   { label: 'Check', pattern: /\bcheck\b/i },
   {
     label: 'Deposit',
-    pattern: /\bdeposit\b|\bmobile\s*dep\b|\bremote\s*dep\b|\bcounter\s*credit\b/i,
+    pattern: /\bdeposit\b|\bremote\s*dep\b|\bcounter\s*credit\b/i,
   },
   {
     label: 'Withdrawal',
@@ -210,6 +275,16 @@ export function categorizeSource(description: string): string {
     }
   }
   return 'Other';
+}
+
+export function extractNotes(description: string): string {
+  if (/\bamazon\b|\bamzn\b/i.test(description)) {
+    return 'Amazon';
+  }
+  if (/home\s*depot|\bhomedepot\b/i.test(description)) {
+    return 'Home Depot';
+  }
+  return '';
 }
 
 async function sha256Hex16(input: string): Promise<string> {
@@ -306,8 +381,9 @@ export async function processStatements(
       }
 
       const transactionType: TransactionType = amount >= 0 ? 'Income' : 'Expense';
-      const referenceNumber = extractReferenceNumber(rawDesc, normalizedCheck);
       const source = categorizeSource(rawDesc);
+      const referenceNumber = extractReferenceNumber(rawDesc, normalizedCheck, source);
+      const notes = extractNotes(rawDesc);
 
       let syncStatus: NormalizedTransaction['syncStatus'] = 'pending';
       if (syncedIds.has(uniqueId)) {
@@ -327,6 +403,7 @@ export async function processStatements(
         description: rawDesc,
         referenceNumber,
         source,
+        notes,
         sourceFile: stmt.fileName,
         occurrenceIndex,
         reviewStatus,
@@ -379,3 +456,269 @@ export async function processStatements(
     },
   };
 }
+
+export const DEFAULT_BANK_LEDGER_BANK = 'Wells Fargo';
+
+export function normalizeCheckNumberForMatch(raw?: string): string {
+  if (!raw) return '';
+  const cleaned = raw.trim().replace(/^#+/, '').replace(/\s+/g, '');
+  if (!cleaned || /^(0+|n\/?a|none|-+)$/i.test(cleaned)) {
+    return '';
+  }
+  return cleaned.replace(/^0+(?=\d)/, '').toUpperCase();
+}
+
+export function normalizeBankNameForMatch(raw?: string): string {
+  const lower = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!lower) return '';
+
+  if (lower === 'wf' || lower.includes('wells fargo') || lower.includes('wellsfargo')) {
+    return 'wellsfargo';
+  }
+  if (lower === 'bofa' || lower.includes('bank of america') || lower.includes('bankofamerica')) {
+    return 'bankofamerica';
+  }
+  if (lower.includes('jpmorgan chase') || lower === 'chase' || lower.startsWith('chase ')) {
+    return 'chase';
+  }
+
+  const genericSuffixes = new Set([
+    'bank',
+    'na',
+    'n',
+    'a',
+    'national',
+    'association',
+    'inc',
+    'llc',
+    'corp',
+    'co',
+    'puja',
+    'regular',
+    'checking',
+    'account',
+  ]);
+  const tokens = lower.split(' ').filter((t) => t && !genericSuffixes.has(t));
+  return tokens.join('') || lower.replace(/\s+/g, '');
+}
+
+export function isBankCheckTransaction(
+  tx: Pick<NormalizedTransaction, 'source' | 'description'>
+): boolean {
+  const srcLower = tx.source.trim().toLowerCase();
+  const desc = tx.description.trim();
+  if (srcLower === 'check') return true;
+  if ((srcLower === '' || srcLower === 'other') && categorizeSource(desc) === 'Check') {
+    return true;
+  }
+  return /^\s*check\b/i.test(desc) && srcLower !== 'deposit';
+}
+
+export function extractBankTxCheckNumber(
+  tx: Pick<NormalizedTransaction, 'referenceNumber' | 'description'>
+): string {
+  const fromRef = normalizeCheckNumberForMatch(tx.referenceNumber);
+  if (fromRef) return fromRef;
+  const descMatch = tx.description
+    .trim()
+    .match(/\b(?:CHECK|CHK)\s*(?:#|NO\.?|NUMBER)?\s*(\d{2,12})\b/i);
+  return descMatch ? normalizeCheckNumberForMatch(descMatch[1]) : '';
+}
+
+export function buildMatchedCheckDescription(paidTo: string, memo: string): string {
+  const cleanPaidTo = paidTo.trim().replace(/\s+/g, ' ');
+  const cleanMemo = memo.trim().replace(/\s+/g, ' ');
+  if (!cleanPaidTo && !cleanMemo) {
+    return '';
+  }
+  return ['CHECK', cleanPaidTo, cleanMemo].filter(Boolean).join(' ');
+}
+
+function parseIsoDays(iso: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim());
+  if (!m) return null;
+  const t = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isFinite(t) ? Math.floor(t / 86400000) : null;
+}
+
+export function findMatchingCheckRecord(
+  tx: Pick<
+    NormalizedTransaction,
+    'source' | 'description' | 'referenceNumber' | 'transactionType' | 'amountCents' | 'date' | 'bank'
+  >,
+  checkRecords: CheckRecord[],
+  defaultBankName: string = DEFAULT_BANK_LEDGER_BANK
+): CheckRecord | null {
+  if (!checkRecords.length || !isBankCheckTransaction(tx)) return null;
+
+  const txCheckNum = extractBankTxCheckNumber(tx);
+  if (!txCheckNum) return null;
+
+  const txBankNorm = normalizeBankNameForMatch(tx.bank || defaultBankName);
+  if (!txBankNorm) return null;
+
+  const candidates = checkRecords.filter((chk) => {
+    if (chk.isDuplicate) return false;
+    const chkNum = normalizeCheckNumberForMatch(chk.checkNumber);
+    const chkBankNorm = normalizeBankNameForMatch(chk.bank);
+    return Boolean(chkNum && chkBankNorm && chkNum === txCheckNum && chkBankNorm === txBankNorm);
+  });
+
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const txAbsCents = Math.abs(tx.amountCents);
+  const txDays = parseIsoDays(tx.date);
+
+  let best = candidates[0];
+  let bestScore = -Infinity;
+
+  for (const chk of candidates) {
+    let score = 0;
+    if (chk.transactionType === tx.transactionType) score += 100;
+    if (chk.amountCents > 0 && chk.amountCents === txAbsCents) score += 100;
+    if (chk.paidTo.trim()) score += 20;
+    if (chk.memo.trim()) score += 10;
+    if (txDays !== null) {
+      const chkDays = parseIsoDays(chk.date);
+      if (chkDays !== null) {
+        const diff = Math.abs(txDays - chkDays);
+        score -= Math.min(diff, 365) * 0.05;
+        if (chkDays <= txDays) score += 2;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = chk;
+    }
+  }
+
+  return best;
+}
+
+export function resolveCheckLedgerDescription(
+  tx: Pick<
+    NormalizedTransaction,
+    'source' | 'description' | 'referenceNumber' | 'transactionType' | 'amountCents' | 'date' | 'bank'
+  >,
+  checkRecords: CheckRecord[],
+  defaultBankName: string = DEFAULT_BANK_LEDGER_BANK
+): string | null {
+  const matched = findMatchingCheckRecord(tx, checkRecords, defaultBankName);
+  if (!matched) return null;
+  const built = buildMatchedCheckDescription(matched.paidTo, matched.memo);
+  return built || null;
+}
+
+export interface BankRuleBackfillUpdate {
+  sheetRowNumber: number;
+  description?: string;
+  referenceNumber?: string;
+  source?: string;
+  notes?: string;
+}
+
+export function findBankRuleBackfillUpdates(
+  transactions: NormalizedTransaction[],
+  checkRecords: CheckRecord[] = [],
+  defaultBankName: string = DEFAULT_BANK_LEDGER_BANK
+): BankRuleBackfillUpdate[] {
+  const updates: BankRuleBackfillUpdate[] = [];
+
+  for (const tx of transactions) {
+    if (!tx.sheetRowNumber || tx.sheetRowNumber < 1) continue;
+    const desc = tx.description.trim();
+    if (!desc) continue;
+
+    const patch: BankRuleBackfillUpdate = { sheetRowNumber: tx.sheetRowNumber };
+    let changed = false;
+
+    const isCheckTx = isBankCheckTransaction(tx);
+
+    // 0. Check_Ledger match: replace Check Description with "CHECK <Paid To> <Memo / For>"
+    const matchedCheckDesc =
+      checkRecords.length > 0
+        ? resolveCheckLedgerDescription(tx, checkRecords, defaultBankName)
+        : null;
+    if (matchedCheckDesc && desc !== matchedCheckDesc) {
+      patch.description = matchedCheckDesc;
+      changed = true;
+    }
+
+    const effectiveDesc = matchedCheckDesc ?? desc;
+
+    // 1. Notes: Amazon or Home Depot
+    const expectedNote = extractNotes(effectiveDesc);
+    const currentNotes = (tx.notes ?? '').trim();
+    if (expectedNote && currentNotes !== expectedNote && !currentNotes) {
+      patch.notes = expectedNote;
+      changed = true;
+    }
+
+    // 2. Source: Merge WIRE -> WT, rename Transfer -> ACC-T, and re-categorize legacy Amazon, Home Depot, empty, or Other sources
+    const currSrcLower = tx.source.trim().toLowerCase();
+    let nextSource = tx.source;
+    if (currSrcLower === 'wire') {
+      nextSource = 'WT';
+    } else if (currSrcLower === 'transfer') {
+      nextSource = 'ACC-T';
+    } else if (
+      currSrcLower === 'amazon' ||
+      currSrcLower === 'home depot' ||
+      currSrcLower === 'other' ||
+      currSrcLower === ''
+    ) {
+      nextSource = isCheckTx ? 'Check' : categorizeSource(desc);
+    }
+    if (nextSource !== tx.source) {
+      patch.source = nextSource;
+      changed = true;
+    }
+
+    // 3. Reference # rules: WT/WIRE TRN, Direct Pay Tran ID, ending CARD 7574/9130, Branch/Store Deposit, Mobile Deposit Ref Number
+    const isWire = !isCheckTx && /\b(?:wt|wire|fedwire)\b/i.test(`${nextSource} ${desc}`);
+    const hasTrn = /\bTRN\s*(?:NO\.?)?\s*[:#-]?\s*([A-Z0-9-]{4,})\b/i.test(desc);
+    const isDirectPay =
+      !isCheckTx &&
+      (/direct\s*pay[-\s]*payment|\bdirect\s*pay\b/i.test(desc) ||
+        /direct\s*pay/i.test(nextSource));
+    const hasDirectPayTranId = isDirectPay && Boolean(extractDirectPayTranId(desc));
+    const endsWithCard = !isCheckTx && /\bCARD\s*(?:7574|9130)\s*$/i.test(desc);
+    const isDeposit =
+      !isCheckTx &&
+      (/\b(?:edeposit|mobile\s*(?:check\s*)?dep(?:osit)?|deposit|counter\s*credit)\b/i.test(
+        desc
+      ) ||
+        /^deposit$/i.test(nextSource));
+    const hasDepositRef =
+      isDeposit && /\bRef(?:erence)?\s*(?:Number|Num|No\.?)\s*:\s*([A-Z0-9-]+)\b/i.test(desc);
+    const isBranchDeposit = isDeposit && !hasDepositRef && /\b(?:branch|store)\b/i.test(desc);
+
+    if (
+      (isWire && hasTrn) ||
+      hasDirectPayTranId ||
+      endsWithCard ||
+      isBranchDeposit ||
+      hasDepositRef
+    ) {
+      const expectedRef = extractReferenceNumber(desc, undefined, nextSource);
+      if (expectedRef && tx.referenceNumber.trim() !== expectedRef) {
+        patch.referenceNumber = expectedRef;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      updates.push(patch);
+    }
+  }
+
+  return updates;
+}
+

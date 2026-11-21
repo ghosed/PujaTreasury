@@ -48,6 +48,10 @@ export interface NormalizedTransaction {
   isRecon?: 'Yes' | 'No';
   /** Expense Category copied or selected for this transaction ("Category" column) */
   category?: string;
+  /** Additional transaction notes ("Notes" column, e.g. Amazon or Home Depot) */
+  notes?: string;
+  /** Issuing bank name if present in a Bank column (defaults to Wells Fargo for Bank_Ledger) */
+  bank?: string;
   /** Exact 1-based row number in Google Sheets when loaded from the sheet */
   sheetRowNumber?: number | null;
 }
@@ -77,6 +81,8 @@ export interface SyncPlan {
   isReconColIndex?: number;
   needsCategoryHeader?: boolean;
   categoryColIndex?: number;
+  needsNotesHeader?: boolean;
+  notesColIndex?: number;
   existingIdsCount: number;
   toAppend: NormalizedTransaction[];
   skippedAlreadySynced: NormalizedTransaction[];

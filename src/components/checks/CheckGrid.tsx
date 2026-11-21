@@ -14,11 +14,15 @@ interface CheckGridProps {
   isLoggingIn: boolean;
   sortField: CheckSortField;
   sortOrder: 'desc' | 'asc';
+  expenseCategoryOptions: string[];
+  incomeCategoryOptions: string[];
   updatingReconKey: string | null;
+  updatingCategoryKey: string | null;
   onSignIn: () => void;
   onToggleSort: (field: CheckSortField) => void;
   onEditRecord: (record: CheckRecord) => void;
   onUpdateIsRecon: (record: CheckRecord, isRecon: 'Yes' | 'No') => void;
+  onUpdateCategory: (record: CheckRecord, category: string) => void;
   onTriggerUpload: () => void;
   onOpenManualEntry: () => void;
   onResetFilters: () => void;
@@ -32,11 +36,15 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
   isLoggingIn,
   sortField,
   sortOrder,
+  expenseCategoryOptions,
+  incomeCategoryOptions,
   updatingReconKey,
+  updatingCategoryKey,
   onSignIn,
   onToggleSort,
   onEditRecord,
   onUpdateIsRecon,
+  onUpdateCategory,
   onTriggerUpload,
   onOpenManualEntry,
   onResetFilters,
@@ -189,6 +197,7 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
               <th className="px-3 py-2.5 text-right font-medium whitespace-nowrap">Amount</th>
               <th className="px-3 py-2.5 font-medium">Paid To</th>
               <th className="px-3 py-2.5 font-medium">Paid By</th>
+              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Category</th>
               <th className="px-4 py-2.5 font-medium">Memo / For</th>
             </tr>
           </thead>
@@ -324,6 +333,39 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
                         {rec.sourceFileName}
                       </div>
                     )}
+                  </td>
+
+                  <td className="px-3 py-2.5 whitespace-nowrap">
+                    {(() => {
+                      const currentCat = (rec.category ?? '').trim();
+                      const typeOptions =
+                        rec.transactionType === 'Income'
+                          ? incomeCategoryOptions
+                          : expenseCategoryOptions;
+                      const rowCatOptions =
+                        currentCat &&
+                        !typeOptions.some(
+                          (c) => c.toLowerCase() === currentCat.toLowerCase()
+                        )
+                          ? [currentCat, ...typeOptions]
+                          : typeOptions;
+                      return (
+                        <select
+                          value={currentCat}
+                          onChange={(e) => onUpdateCategory(rec, e.target.value)}
+                          disabled={isDup || updatingCategoryKey === rec.rowKey}
+                          aria-label={`Category for ${rec.uniqueId}`}
+                          className="max-w-[170px] rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <option value="">—</option>
+                          {rowCatOptions.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()}
                   </td>
 
                   <td className="max-w-[220px] truncate px-4 py-2.5 text-slate-600" title={rec.memo}>

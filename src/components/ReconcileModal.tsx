@@ -254,6 +254,8 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
             isReconColIndex: ledger.isReconColIndex,
             hasCategoryHeader: ledger.hasCategoryHeader,
             categoryColIndex: ledger.categoryColIndex,
+            hasNotesHeader: ledger.hasNotesHeader,
+            notesColIndex: ledger.notesColIndex,
           };
           const count = await batchUpdateBankReconciliation(
             token,

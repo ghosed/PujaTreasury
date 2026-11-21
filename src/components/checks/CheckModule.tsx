@@ -15,6 +15,7 @@ import {
   RefreshCw,
   ScanLine,
   Search,
+  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -27,30 +28,45 @@ import {
 } from '../../types/check';
 import {
   buildCheckUniqueId,
+  deriveCheckTransactionType,
   isValid12CharUniqueId,
   processScannedCheckFiles,
 } from '../../utils/checkProcessor';
+import { categorizeChecksHybrid } from '../../utils/checkCategorizer';
 import {
+  batchUpdateCheckCategories,
   batchUpdateCheckUniqueIds,
   CANONICAL_CHECK_HEADERS,
   CHECK_SPREADSHEET_ID,
   executeCheckSyncPlan,
   fetchCheckLedger,
   prepareCheckSyncPlan,
+  updateCheckCategory,
   updateCheckIsRecon,
   updateCheckRecord,
 } from '../../services/checkSheets';
-import { SheetsApiError } from '../../services/googleSheets';
+import {
+  BankLookUpCategories,
+  fetchBankLookUpCategories,
+  SheetsApiError,
+  TARGET_SPREADSHEET_ID,
+} from '../../services/googleSheets';
+import {
+  EXPENSE_SPREADSHEET_ID,
+  fetchExpenseCategories,
+} from '../../services/expenseSheets';
 import { clearCachedToken, getAccessToken } from '../../services/firebaseAuth';
 import { CheckGrid, CheckSortField } from './CheckGrid';
 import { CheckEntryModal } from './CheckEntryModal';
 import { CheckSyncConfirmModal } from './CheckSyncConfirmModal';
+import { CategorizeReviewItem, CheckCategorizeModal } from './CheckCategorizeModal';
 
 interface CheckModuleProps {
   needsAuth: boolean;
   isLoggingIn: boolean;
   onSignIn: () => void;
   onAuthExpired: () => void;
+  onCheckRecordsChange?: (records: CheckRecord[]) => void;
 }
 
 type OriginFilter = 'all' | 'sheet' | 'ready' | 'duplicates';
@@ -103,6 +119,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
   isLoggingIn,
   onSignIn,
   onAuthExpired,
+  onCheckRecordsChange,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const isFetchingRef = useRef(false);
@@ -140,6 +157,24 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
   const [isMigratingIds, setIsMigratingIds] = useState(false);
   const [isSavingModal, setIsSavingModal] = useState(false);
   const [updatingReconKey, setUpdatingReconKey] = useState<string | null>(null);
+  const [updatingCategoryKey, setUpdatingCategoryKey] = useState<string | null>(null);
+  const [isAutoCategorizing, setIsAutoCategorizing] = useState(false);
+  const [isApplyingBatchCategories, setIsApplyingBatchCategories] = useState(false);
+  const [categorizeReviewState, setCategorizeReviewState] = useState<{
+    isOpen: boolean;
+    items: CategorizeReviewItem[];
+  }>({ isOpen: false, items: [] });
+
+  // LookUp Categories (Check_Ledger LookUp -> Bank_Ledger LookUp -> Expense_Ledger fallback)
+  const [checkLookupCategories, setCheckLookupCategories] = useState<BankLookUpCategories>({
+    expenseCategories: [],
+    incomeCategories: [],
+  });
+  const [bankLookupCategories, setBankLookupCategories] = useState<BankLookUpCategories>({
+    expenseCategories: [],
+    incomeCategories: [],
+  });
+  const [expenseFallbackCategories, setExpenseFallbackCategories] = useState<string[]>([]);
 
   // Notifications
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -149,11 +184,33 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
   const [originFilter, setOriginFilter] = useState<OriginFilter>('all');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [reconFilter, setReconFilter] = useState<ReconFilter>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [sortField, setSortField] = useState<CheckSortField>('date');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+
+  const loadCheckLookupCategories = useCallback(async (explicitToken?: string) => {
+    const token = explicitToken ?? (await getAccessToken());
+    if (!token) return;
+
+    const [checkRes, bankRes, expenseRes] = await Promise.allSettled([
+      fetchBankLookUpCategories(token, CHECK_SPREADSHEET_ID),
+      fetchBankLookUpCategories(token, TARGET_SPREADSHEET_ID),
+      fetchExpenseCategories(token, EXPENSE_SPREADSHEET_ID),
+    ]);
+
+    if (checkRes.status === 'fulfilled') {
+      setCheckLookupCategories(checkRes.value);
+    }
+    if (bankRes.status === 'fulfilled') {
+      setBankLookupCategories(bankRes.value);
+    }
+    if (expenseRes.status === 'fulfilled') {
+      setExpenseFallbackCategories(expenseRes.value);
+    }
+  }, []);
 
   const loadCheckLedger = useCallback(
     async (explicitToken?: string) => {
@@ -168,7 +225,10 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       setIsLoadingSheet(true);
       setErrorMessage(null);
       try {
-        const loaded = await fetchCheckLedger(token, CHECK_SPREADSHEET_ID);
+        const [loaded] = await Promise.all([
+          fetchCheckLedger(token, CHECK_SPREADSHEET_ID),
+          loadCheckLookupCategories(token),
+        ]);
         setSheetMeta(loaded.meta);
         setSheetRecords(loaded.records);
         setExistingIds(loaded.existingIds);
@@ -189,7 +249,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         isFetchingRef.current = false;
       }
     },
-    [onAuthExpired]
+    [loadCheckLookupCategories, onAuthExpired]
   );
 
   useEffect(() => {
@@ -197,6 +257,12 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       void loadCheckLedger();
     }
   }, [needsAuth, hasLoadedSheet, loadCheckLedger]);
+
+  useEffect(() => {
+    if (hasLoadedSheet && onCheckRecordsChange) {
+      onCheckRecordsChange(sheetRecords);
+    }
+  }, [hasLoadedSheet, sheetRecords, onCheckRecordsChange]);
 
   const scanSingleFile = useCallback(async (fileId: string, file: File) => {
     try {
@@ -225,6 +291,35 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
 
       const extractedChecks = Array.isArray(payload.checks) ? payload.checks : [];
 
+      let categorizedChecks = extractedChecks;
+      const ctx = categorizeContextRef.current;
+      if (
+        extractedChecks.length > 0 &&
+        (ctx.expenseCategories.length > 0 || ctx.incomeCategories.length > 0)
+      ) {
+        try {
+          const suggestions = await categorizeChecksHybrid({
+            checks: extractedChecks.map((chk, idx) => ({
+              id: `scan-${fileId}-${idx}`,
+              transactionType: deriveCheckTransactionType(chk.paidBy ?? ''),
+              amount: Number.isFinite(chk.amount) ? Math.abs(chk.amount) : undefined,
+              memo: chk.memo ?? '',
+              paidTo: chk.paidTo ?? '',
+              paidBy: chk.paidBy ?? '',
+            })),
+            expenseCategories: ctx.expenseCategories,
+            incomeCategories: ctx.incomeCategories,
+            existingRecords: ctx.existingRecords,
+          });
+          categorizedChecks = extractedChecks.map((chk, idx) => {
+            const match = suggestions.get(`scan-${fileId}-${idx}`);
+            return match?.category ? { ...chk, category: match.category } : chk;
+          });
+        } catch {
+          // Preserve extracted checks even if AI categorization endpoint fails transiently
+        }
+      }
+
       setUploadedFiles((prev) =>
         prev.map((item) =>
           item.id === fileId
@@ -232,10 +327,10 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 ...item,
                 status: 'ready',
                 errorMessage:
-                  extractedChecks.length === 0
+                  categorizedChecks.length === 0
                     ? 'No checks detected in this file.'
                     : undefined,
-                extractedChecks,
+                extractedChecks: categorizedChecks,
               }
             : item
         )
@@ -394,6 +489,72 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     setEndDate(`${ym}-${String(lastDay).padStart(2, '0')}`);
   };
 
+  const checkExpenseCategoryOptions = useMemo(() => {
+    if (checkLookupCategories.expenseCategories.length > 0) {
+      return checkLookupCategories.expenseCategories;
+    }
+    if (bankLookupCategories.expenseCategories.length > 0) {
+      return bankLookupCategories.expenseCategories;
+    }
+    return expenseFallbackCategories;
+  }, [
+    checkLookupCategories.expenseCategories,
+    bankLookupCategories.expenseCategories,
+    expenseFallbackCategories,
+  ]);
+
+  const checkIncomeCategoryOptions = useMemo(() => {
+    if (checkLookupCategories.incomeCategories.length > 0) {
+      return checkLookupCategories.incomeCategories;
+    }
+    return bankLookupCategories.incomeCategories;
+  }, [checkLookupCategories.incomeCategories, bankLookupCategories.incomeCategories]);
+
+  const categorizeContextRef = useRef<{
+    expenseCategories: string[];
+    incomeCategories: string[];
+    existingRecords: CheckRecord[];
+  }>({
+    expenseCategories: [],
+    incomeCategories: [],
+    existingRecords: [],
+  });
+
+  useEffect(() => {
+    categorizeContextRef.current = {
+      expenseCategories: checkExpenseCategoryOptions,
+      incomeCategories: checkIncomeCategoryOptions,
+      existingRecords: sheetRecords,
+    };
+  }, [checkExpenseCategoryOptions, checkIncomeCategoryOptions, sheetRecords]);
+
+  const uncategorizedSheetChecks = useMemo(
+    () =>
+      sheetRecords.filter(
+        (rec) => Boolean(rec.sheetRowNumber) && !(rec.category ?? '').trim()
+      ),
+    [sheetRecords]
+  );
+
+  const availableCheckCategories = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of [
+      ...checkExpenseCategoryOptions,
+      ...checkIncomeCategoryOptions,
+      ...combinedRecords.map((r) => r.category ?? ''),
+    ]) {
+      const trimmed = c.trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(trimmed);
+      }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [checkExpenseCategoryOptions, checkIncomeCategoryOptions, combinedRecords]);
+
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
 
@@ -408,11 +569,18 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       if (reconFilter === 'unrecon' && rec.isRecon !== 'No') return false;
       if (reconFilter === 'recon' && rec.isRecon !== 'Yes') return false;
 
+      if (
+        categoryFilter !== 'all' &&
+        (rec.category ?? '').trim().toLowerCase() !== categoryFilter.toLowerCase()
+      ) {
+        return false;
+      }
+
       if (startDate && (!rec.date || rec.date < startDate)) return false;
       if (endDate && (!rec.date || rec.date > endDate)) return false;
 
       if (q) {
-        const hay = `${rec.uniqueId} ${rec.checkNumber} ${rec.routingNumber} ${rec.bank} ${rec.paidTo} ${rec.paidBy} ${rec.memo} ${rec.transactionType}`.toLowerCase();
+        const hay = `${rec.uniqueId} ${rec.checkNumber} ${rec.routingNumber} ${rec.bank} ${rec.paidTo} ${rec.paidBy} ${rec.memo} ${rec.category ?? ''} ${rec.transactionType}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
 
@@ -451,6 +619,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     originFilter,
     typeFilter,
     reconFilter,
+    categoryFilter,
     startDate,
     endDate,
     searchQuery,
@@ -658,6 +827,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
           memo: nextRecord.memo,
           transactionType: nextRecord.transactionType,
           isRecon: nextRecord.isRecon,
+          category: nextRecord.category ?? '',
         },
       }));
       setEntryModalState({ isOpen: false, mode: 'create', record: null });
@@ -780,6 +950,161 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     }
   };
 
+  const handleUpdateCategory = async (rec: CheckRecord, nextCategory: string) => {
+    const trimmed = nextCategory.trim();
+    if ((rec.category ?? '').trim() === trimmed) return;
+
+    if (rec.sourceOrigin === 'scan') {
+      setStagedOverrides((prev) => ({
+        ...prev,
+        [rec.rowKey]: {
+          ...prev[rec.rowKey],
+          category: trimmed,
+        },
+      }));
+      return;
+    }
+
+    if (!sheetMeta || !rec.sheetRowNumber) return;
+
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      return;
+    }
+
+    const prevRecords = sheetRecords;
+    setUpdatingCategoryKey(rec.rowKey);
+    setErrorMessage(null);
+    setSheetRecords((prev) =>
+      prev.map((item) =>
+        item.rowKey === rec.rowKey ? { ...item, category: trimmed } : item
+      )
+    );
+
+    try {
+      await updateCheckCategory(token, sheetMeta, rec.sheetRowNumber, trimmed);
+      setSheetMeta((prev) =>
+        prev
+          ? {
+              ...prev,
+              hasTransactionTypeHeader: true,
+              hasIsReconHeader: true,
+              hasRoutingNumberHeader: true,
+              hasCategoryHeader: true,
+            }
+          : prev
+      );
+      setStatusMessage(
+        trimmed
+          ? `Updated Category for ${rec.uniqueId} to "${trimmed}".`
+          : `Cleared Category for ${rec.uniqueId}.`
+      );
+    } catch (err) {
+      setSheetRecords(prevRecords);
+      if (err instanceof SheetsApiError && err.status === 401) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to update Category in Check_Ledger.'
+        );
+      }
+    } finally {
+      setUpdatingCategoryKey(null);
+    }
+  };
+
+  const handleRunAutoCategorizeUncategorized = async () => {
+    if (uncategorizedSheetChecks.length === 0) return;
+    if (
+      checkExpenseCategoryOptions.length === 0 &&
+      checkIncomeCategoryOptions.length === 0
+    ) {
+      setErrorMessage(
+        'No Expense or Income categories were found in the LookUp tab. Please refresh Check_Ledger first.'
+      );
+      return;
+    }
+
+    setIsAutoCategorizing(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    try {
+      const suggestions = await categorizeChecksHybrid({
+        checks: uncategorizedSheetChecks.map((rec) => ({
+          id: rec.rowKey,
+          transactionType: rec.transactionType,
+          amount: rec.amount,
+          memo: rec.memo,
+          paidTo: rec.paidTo,
+          paidBy: rec.paidBy,
+        })),
+        expenseCategories: checkExpenseCategoryOptions,
+        incomeCategories: checkIncomeCategoryOptions,
+        existingRecords: sheetRecords,
+      });
+
+      const items: CategorizeReviewItem[] = uncategorizedSheetChecks.map((record) => ({
+        record,
+        suggestion: suggestions.get(record.rowKey) ?? {
+          id: record.rowKey,
+          category: '',
+          confidence: 'low',
+          method: 'abstained',
+          reason: 'Abstained: insufficient information.',
+        },
+      }));
+
+      setCategorizeReviewState({ isOpen: true, items });
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : 'Failed to auto-categorize uncategorized checks.'
+      );
+    } finally {
+      setIsAutoCategorizing(false);
+    }
+  };
+
+  const handleApplyAutoCategories = async (
+    updates: Array<{ sheetRowNumber: number; category: string }>
+  ) => {
+    if (!sheetMeta || updates.length === 0) return;
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      return;
+    }
+
+    setIsApplyingBatchCategories(true);
+    setErrorMessage(null);
+    try {
+      const count = await batchUpdateCheckCategories(token, sheetMeta, updates);
+      setCategorizeReviewState({ isOpen: false, items: [] });
+      await loadCheckLedger(token);
+      setStatusMessage(
+        `Assigned Category for ${count} ${count === 1 ? 'check' : 'checks'} in Check_Ledger.`
+      );
+    } catch (err) {
+      if (err instanceof SheetsApiError && err.status === 401) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to save assigned categories to Check_Ledger.'
+        );
+      }
+    } finally {
+      setIsApplyingBatchCategories(false);
+    }
+  };
+
   const handleExportCsv = () => {
     const exportRows = filteredRecords.filter((r) => !r.isDuplicate);
     if (exportRows.length === 0) return;
@@ -798,6 +1123,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         rec.transactionType,
         rec.isRecon,
         rec.routingNumber,
+        rec.category ?? '',
         rec.sourceOrigin === 'sheet' ? 'Check_Ledger' : rec.sourceFileName || 'Scanned',
       ]
         .map(csvCell)
@@ -820,6 +1146,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     setOriginFilter('all');
     setTypeFilter('all');
     setReconFilter('all');
+    setCategoryFilter('all');
     setSearchQuery('');
     setStartDate('');
     setEndDate('');
@@ -1110,6 +1437,26 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
 
               <button
                 type="button"
+                onClick={() => void handleRunAutoCategorizeUncategorized()}
+                disabled={
+                  needsAuth ||
+                  isLoadingSheet ||
+                  isAutoCategorizing ||
+                  uncategorizedSheetChecks.length === 0
+                }
+                className="inline-flex items-center gap-1.5 rounded-md border border-teal-300 bg-teal-50/60 px-3.5 py-2 text-xs font-medium text-teal-800 hover:bg-teal-100/70 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 whitespace-nowrap shrink-0"
+              >
+                <Sparkles
+                  className={`h-3.5 w-3.5 ${isAutoCategorizing ? 'animate-pulse' : ''}`}
+                  aria-hidden="true"
+                />
+                {isAutoCategorizing
+                  ? 'Categorizing...'
+                  : `Auto-Categorize Uncategorized Checks (${uncategorizedSheetChecks.length})`}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => void handleOpenSyncConfirmation()}
                 disabled={
                   needsAuth ||
@@ -1317,7 +1664,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search check #, bank, paid to, paid by, memo, Unique ID..."
+                  placeholder="Search check #, bank, paid to, paid by, category, memo, Unique ID..."
                   className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
                 />
               </div>
@@ -1332,6 +1679,21 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 <option value="all">All Types</option>
                 <option value="Income">Income</option>
                 <option value="Expense">Expense</option>
+              </select>
+
+              {/* Category Filter */}
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                aria-label="Filter by Category"
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+              >
+                <option value="all">All Categories</option>
+                {availableCheckCategories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
               </select>
 
               {/* Is_Recon Filter */}
@@ -1384,6 +1746,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
               {(originFilter !== 'all' ||
                 typeFilter !== 'all' ||
                 reconFilter !== 'all' ||
+                categoryFilter !== 'all' ||
                 searchQuery ||
                 startDate ||
                 endDate) && (
@@ -1408,7 +1771,10 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
               isLoggingIn={isLoggingIn}
               sortField={sortField}
               sortOrder={sortOrder}
+              expenseCategoryOptions={checkExpenseCategoryOptions}
+              incomeCategoryOptions={checkIncomeCategoryOptions}
               updatingReconKey={updatingReconKey}
+              updatingCategoryKey={updatingCategoryKey}
               onSignIn={onSignIn}
               onToggleSort={handleToggleSort}
               onEditRecord={(rec) =>
@@ -1419,6 +1785,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 })
               }
               onUpdateIsRecon={handleUpdateIsRecon}
+              onUpdateCategory={(rec, category) => void handleUpdateCategory(rec, category)}
               onTriggerUpload={() => fileInputRef.current?.click()}
               onOpenManualEntry={() =>
                 setEntryModalState({
@@ -1438,6 +1805,8 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         isOpen={entryModalState.isOpen}
         mode={entryModalState.mode}
         record={entryModalState.record}
+        expenseCategoryOptions={checkExpenseCategoryOptions}
+        incomeCategoryOptions={checkIncomeCategoryOptions}
         isSaving={isSavingModal}
         onClose={() =>
           !isSavingModal &&
@@ -1451,6 +1820,19 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
         isSyncing={isSyncing}
         onCancel={() => !isSyncing && setPendingSyncPlan(null)}
         onConfirm={() => void handleConfirmSync()}
+      />
+
+      <CheckCategorizeModal
+        isOpen={categorizeReviewState.isOpen}
+        items={categorizeReviewState.items}
+        expenseCategoryOptions={checkExpenseCategoryOptions}
+        incomeCategoryOptions={checkIncomeCategoryOptions}
+        isApplying={isApplyingBatchCategories}
+        onClose={() =>
+          !isApplyingBatchCategories &&
+          setCategorizeReviewState({ isOpen: false, items: [] })
+        }
+        onApply={handleApplyAutoCategories}
       />
     </div>
   );

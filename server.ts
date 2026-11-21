@@ -2,8 +2,10 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import type { ChatApiRequest } from './src/types/chatbot.ts';
+import type { CheckCategorizeRequest } from './src/types/check.ts';
 import { formatGeminiError, handleChatRequest } from './server/geminiChat.ts';
 import { type CheckScanRequest, scanCheckDocument } from './server/checkScanner.ts';
+import { categorizeChecksWithGemini } from './server/checkCategorizer.ts';
 
 async function startServer() {
   const app = express();
@@ -52,6 +54,32 @@ async function startServer() {
         fileName: typeof body.fileName === 'string' && body.fileName.trim() ? body.fileName.trim() : 'check-upload',
         mimeType: typeof body.mimeType === 'string' ? body.mimeType : '',
         base64Data: body.base64Data,
+      });
+
+      res.json(result);
+    } catch (err) {
+      const { status, message } = formatGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/checks/categorize', async (req, res) => {
+    try {
+      const body = req.body as Partial<CheckCategorizeRequest> | undefined;
+      if (!body || !Array.isArray(body.checks)) {
+        res.status(400).json({ error: 'An array of checks to categorize is required.' });
+        return;
+      }
+
+      const result = await categorizeChecksWithGemini({
+        checks: body.checks,
+        expenseCategories: Array.isArray(body.expenseCategories)
+          ? body.expenseCategories
+          : [],
+        incomeCategories: Array.isArray(body.incomeCategories) ? body.incomeCategories : [],
+        historicalExamples: Array.isArray(body.historicalExamples)
+          ? body.historicalExamples
+          : [],
       });
 
       res.json(result);

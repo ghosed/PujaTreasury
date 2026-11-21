@@ -29,7 +29,13 @@ import {
   UploadedStatement,
 } from './types/statement';
 import { detectColumnMapping, parseCsvText } from './utils/csvParser';
-import { processStatements } from './utils/statementProcessor';
+import { CheckRecord } from './types/check';
+import {
+  extractNotes,
+  findBankRuleBackfillUpdates,
+  processStatements,
+  resolveCheckLedgerDescription,
+} from './utils/statementProcessor';
 import {
   clearCachedToken,
   getAccessToken,
@@ -38,9 +44,11 @@ import {
   logout,
 } from './services/firebaseAuth';
 import {
+  BankLookUpCategories,
   BankSheetColumnLayout,
   batchUpdateBankReconciliation,
   executeSyncPlan,
+  fetchBankLookUpCategories,
   fetchSheetLedger,
   prepareSyncPlan,
   SHEET_HEADERS,
@@ -65,7 +73,7 @@ import {
   fetchExpenseCategories,
   fetchExpenseWorkspace,
 } from './services/expenseSheets';
-import { CHECK_SPREADSHEET_ID } from './services/checkSheets';
+import { CHECK_SPREADSHEET_ID, fetchCheckLedger } from './services/checkSheets';
 import { BankLedgerEntry, findLinkedSyncUpdates } from './utils/reconciler';
 
 type ActiveModule = 'statements' | 'expenses' | 'checks' | 'chatbot';
@@ -93,9 +101,8 @@ const EMPTY_SUMMARY: PipelineSummary = {
 
 const SOURCE_CARD_ROWS: string[][] = [
   ['Check', 'Cash', 'Direct Pay-Payment', 'Zelle'],
-  ['Amazon', 'Home Depot', 'CARD9130', 'CARD7574'],
-  ['Deposit', 'Stripe', 'SumUp', 'WT'],
-  ['Transfer', 'Other'],
+  ['CARD9130', 'CARD7574', 'Deposit', 'Stripe'],
+  ['SumUp', 'WT', 'ACC-T', 'Other'],
 ];
 
 const CONFIGURED_SOURCE_SET = new Set(SOURCE_CARD_ROWS.flat());
@@ -158,6 +165,8 @@ export default function App() {
       isReconColIndex: 8,
       hasCategoryHeader: false,
       categoryColIndex: 9,
+      hasNotesHeader: false,
+      notesColIndex: 10,
     },
     Regular: {
       hasTargetIdHeader: false,
@@ -166,15 +175,23 @@ export default function App() {
       isReconColIndex: 8,
       hasCategoryHeader: false,
       categoryColIndex: 9,
+      hasNotesHeader: false,
+      notesColIndex: 10,
     },
   });
   const [expenseCategories, setExpenseCategories] = useState<string[]>([]);
+  const [bankLookupCategories, setBankLookupCategories] = useState<BankLookUpCategories>({
+    expenseCategories: [],
+    incomeCategories: [],
+  });
+  const [checkLedgerRecords, setCheckLedgerRecords] = useState<CheckRecord[]>([]);
   const [bankFieldOverrides, setBankFieldOverrides] = useState<
     Record<string, Partial<BankTransactionEditPayload>>
   >({});
   const [savingBankRowKey, setSavingBankRowKey] = useState<string | null>(null);
   const [editingBankTx, setEditingBankTx] = useState<NormalizedTransaction | null>(null);
   const [isSavingBankModal, setIsSavingBankModal] = useState(false);
+  const [isApplyingRuleBackfill, setIsApplyingRuleBackfill] = useState(false);
   const hasAutoSyncedLinkedRef = useRef(false);
   const syncLinkedInFlightRef = useRef(false);
 
@@ -226,12 +243,17 @@ export default function App() {
         setSheetLayoutByAccount((prev) => ({
           ...prev,
           [targetAccount]: {
+            descriptionColIndex: loaded.descriptionColIndex,
+            referenceColIndex: loaded.referenceColIndex,
+            sourceColIndex: loaded.sourceColIndex,
             hasTargetIdHeader: loaded.hasTargetIdHeader,
             targetIdColIndex: loaded.targetIdColIndex,
             hasIsReconHeader: loaded.hasIsReconHeader,
             isReconColIndex: loaded.isReconColIndex,
             hasCategoryHeader: loaded.hasCategoryHeader,
             categoryColIndex: loaded.categoryColIndex,
+            hasNotesHeader: loaded.hasNotesHeader,
+            notesColIndex: loaded.notesColIndex,
           },
         }));
         setExistingIdsByAccount((prev) => ({
@@ -270,6 +292,28 @@ export default function App() {
       setExpenseCategories(cats);
     } catch {
       // Non-blocking: Bank ledger still functions if LookUp tab cannot be read
+    }
+  }, []);
+
+  const loadBankLookupCategories = useCallback(async (explicitToken?: string) => {
+    const token = explicitToken ?? (await getAccessToken());
+    if (!token) return;
+    try {
+      const lookups = await fetchBankLookUpCategories(token, TARGET_SPREADSHEET_ID);
+      setBankLookupCategories(lookups);
+    } catch {
+      // Non-blocking: Bank ledger still functions if LookUp tab cannot be read
+    }
+  }, []);
+
+  const loadCheckLedgerRecords = useCallback(async (explicitToken?: string) => {
+    const token = explicitToken ?? (await getAccessToken());
+    if (!token) return;
+    try {
+      const loaded = await fetchCheckLedger(token, CHECK_SPREADSHEET_ID);
+      setCheckLedgerRecords(loaded.records);
+    } catch {
+      // Non-blocking: Bank ledger still functions if Check_Ledger cannot be read
     }
   }, []);
 
@@ -350,20 +394,30 @@ export default function App() {
         });
         setSheetLayoutByAccount({
           Puja: {
+            descriptionColIndex: pujaLoaded.descriptionColIndex,
+            referenceColIndex: pujaLoaded.referenceColIndex,
+            sourceColIndex: pujaLoaded.sourceColIndex,
             hasTargetIdHeader: pujaLoaded.hasTargetIdHeader || pujaPatches.length > 0,
             targetIdColIndex: pujaLoaded.targetIdColIndex,
             hasIsReconHeader: pujaLoaded.hasIsReconHeader || pujaPatches.length > 0,
             isReconColIndex: pujaLoaded.isReconColIndex,
             hasCategoryHeader: pujaLoaded.hasCategoryHeader || pujaPatches.length > 0,
             categoryColIndex: pujaLoaded.categoryColIndex,
+            hasNotesHeader: pujaLoaded.hasNotesHeader,
+            notesColIndex: pujaLoaded.notesColIndex,
           },
           Regular: {
+            descriptionColIndex: regularLoaded.descriptionColIndex,
+            referenceColIndex: regularLoaded.referenceColIndex,
+            sourceColIndex: regularLoaded.sourceColIndex,
             hasTargetIdHeader: regularLoaded.hasTargetIdHeader || regularPatches.length > 0,
             targetIdColIndex: regularLoaded.targetIdColIndex,
             hasIsReconHeader: regularLoaded.hasIsReconHeader || regularPatches.length > 0,
             isReconColIndex: regularLoaded.isReconColIndex,
             hasCategoryHeader: regularLoaded.hasCategoryHeader || regularPatches.length > 0,
             categoryColIndex: regularLoaded.categoryColIndex,
+            hasNotesHeader: regularLoaded.hasNotesHeader,
+            notesColIndex: regularLoaded.notesColIndex,
           },
         });
         setExistingIdsByAccount({
@@ -417,9 +471,11 @@ export default function App() {
 
   useEffect(() => {
     if (!needsAuth) {
+      void loadBankLookupCategories();
       void loadExpenseCategoriesList();
+      void loadCheckLedgerRecords();
     }
-  }, [needsAuth, loadExpenseCategoriesList]);
+  }, [needsAuth, loadBankLookupCategories, loadExpenseCategoriesList, loadCheckLedgerRecords]);
 
   useEffect(() => {
     if (!needsAuth && !hasAutoSyncedLinkedRef.current) {
@@ -464,19 +520,28 @@ export default function App() {
   const effectiveCsvTransactions = useMemo<NormalizedTransaction[]>(() => {
     return csvTransactions.map((tx) => {
       const ov = bankFieldOverrides[tx.uniqueId];
-      if (!ov) return tx;
-      const nextTargetId = ov.targetId ?? tx.targetId ?? '';
+      const matchedCheckDesc =
+        ov?.description === undefined && checkLedgerRecords.length > 0
+          ? resolveCheckLedgerDescription(tx, checkLedgerRecords)
+          : null;
+      const nextDescription = ov?.description ?? matchedCheckDesc ?? tx.description;
+      const autoNote = matchedCheckDesc ? extractNotes(matchedCheckDesc) : '';
+      const nextNotes = ov?.notes ?? (tx.notes || autoNote || '');
+
+      if (!ov && !matchedCheckDesc) return tx;
+      const nextTargetId = ov?.targetId ?? tx.targetId ?? '';
       return {
         ...tx,
-        description: ov.description ?? tx.description,
-        referenceNumber: ov.referenceNumber ?? tx.referenceNumber,
-        source: ov.source ?? tx.source,
+        description: nextDescription,
+        referenceNumber: ov?.referenceNumber ?? tx.referenceNumber,
+        source: ov?.source ?? tx.source,
         targetId: nextTargetId,
-        isRecon: nextTargetId.trim() !== '' ? 'Yes' : (ov.isRecon ?? tx.isRecon ?? 'No'),
-        category: ov.category ?? tx.category ?? '',
+        isRecon: nextTargetId.trim() !== '' ? 'Yes' : (ov?.isRecon ?? tx.isRecon ?? 'No'),
+        category: ov?.category ?? tx.category ?? '',
+        notes: nextNotes,
       };
     });
-  }, [csvTransactions, bankFieldOverrides]);
+  }, [csvTransactions, bankFieldOverrides, checkLedgerRecords]);
 
   const transactions = useMemo<NormalizedTransaction[]>(() => {
     const sheetRows = sheetTransactionsByAccount[account];
@@ -530,7 +595,9 @@ export default function App() {
         setNeedsAuth(false);
         await Promise.all([
           loadSheetLedger(account, res.accessToken),
+          loadBankLookupCategories(res.accessToken),
           loadExpenseCategoriesList(res.accessToken),
+          loadCheckLedgerRecords(res.accessToken),
         ]);
         void syncLinkedPairsAcrossSheets(res.accessToken);
       }
@@ -553,6 +620,8 @@ export default function App() {
     setExistingIdsByAccount({ Puja: new Set(), Regular: new Set() });
     setNewlySyncedIdsByAccount({ Puja: new Set(), Regular: new Set() });
     setExpenseCategories([]);
+    setBankLookupCategories({ expenseCategories: [], incomeCategories: [] });
+    setCheckLedgerRecords([]);
     setBankFieldOverrides({});
     setSavingBankRowKey(null);
     setEditingBankTx(null);
@@ -671,8 +740,12 @@ export default function App() {
       setErrorMessage('Please sign in with Google to load existing Google Sheet records.');
       return;
     }
-    await loadSheetLedger(account, token);
-    await loadExpenseCategoriesList(token);
+    await Promise.all([
+      loadSheetLedger(account, token),
+      loadBankLookupCategories(token),
+      loadExpenseCategoriesList(token),
+      loadCheckLedgerRecords(token),
+    ]);
     await syncLinkedPairsAcrossSheets(token);
   };
 
@@ -733,6 +806,7 @@ export default function App() {
           hasTargetIdHeader: true,
           hasIsReconHeader: true,
           hasCategoryHeader: true,
+          hasNotesHeader: true,
         },
       }));
     } catch (err) {
@@ -799,6 +873,7 @@ export default function App() {
               targetId: normalizedUpdates.targetId,
               isRecon: normalizedUpdates.isRecon,
               category: normalizedUpdates.category,
+              notes: normalizedUpdates.notes,
             }
           : row
       ),
@@ -819,6 +894,7 @@ export default function App() {
             targetId: normalizedUpdates.targetId,
             isRecon: normalizedUpdates.isRecon,
             category: normalizedUpdates.category,
+            notes: normalizedUpdates.notes,
           },
         ]
       );
@@ -829,6 +905,7 @@ export default function App() {
           hasTargetIdHeader: true,
           hasIsReconHeader: true,
           hasCategoryHeader: true,
+          hasNotesHeader: true,
         },
       }));
       setEditingBankTx(null);
@@ -858,6 +935,58 @@ export default function App() {
     }
   };
 
+  const bankRuleBackfillUpdates = useMemo(
+    () =>
+      findBankRuleBackfillUpdates(
+        sheetTransactionsByAccount[account],
+        checkLedgerRecords
+      ),
+    [sheetTransactionsByAccount, account, checkLedgerRecords]
+  );
+
+  const handleApplyBankRuleUpdates = async () => {
+    const layout = sheetLayoutByAccount[account];
+    const needsNotesCol = loadedAccounts[account] && !layout.hasNotesHeader;
+    if (bankRuleBackfillUpdates.length === 0 && !needsNotesCol) return;
+
+    const token = await getAccessToken();
+    if (!token) {
+      setNeedsAuth(true);
+      setErrorMessage('Sign in with Google to apply updated rules to Bank_Ledger.');
+      return;
+    }
+
+    setIsApplyingRuleBackfill(true);
+    setErrorMessage(null);
+    try {
+      const updatedCount = await batchUpdateBankReconciliation(
+        token,
+        TARGET_SPREADSHEET_ID,
+        account,
+        layout,
+        bankRuleBackfillUpdates
+      );
+      await loadSheetLedger(account, token);
+      setReconcileMessage(
+        updatedCount > 0
+          ? `Applied updated Check Description, Reference #, Source, and Notes rules to ${updatedCount.toLocaleString()} row(s) in "${account}".`
+          : `Initialized the "Notes" column header in "${account}".`
+      );
+    } catch (err) {
+      if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
+        clearCachedToken();
+        setNeedsAuth(true);
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to apply updated rules to Bank_Ledger.'
+        );
+      }
+    } finally {
+      setIsApplyingRuleBackfill(false);
+    }
+  };
+
   const handleReconcileComplete = async (res: ReconcileCompleteSummary) => {
     const token = await getAccessToken();
     if (token) {
@@ -866,7 +995,10 @@ export default function App() {
           await loadSheetLedger(tab, token);
         }
       }
-      await loadExpenseCategoriesList(token);
+      await Promise.all([
+        loadBankLookupCategories(token),
+        loadExpenseCategoriesList(token),
+      ]);
     }
     setExpenseRefreshNonce((n) => n + 1);
     if (res.bankUpdatedCount === 0 && res.expenseUpdatedCount === 0) {
@@ -1029,6 +1161,7 @@ export default function App() {
           tx.targetId ?? '',
           tx.isRecon ?? 'No',
           tx.category ?? '',
+          tx.notes ?? '',
         ]
           .map(escapeCsv)
           .join(',')
@@ -1073,10 +1206,26 @@ export default function App() {
     return Array.from(set).sort();
   }, [transactions]);
 
+  const bankExpenseCategoryOptions = useMemo(() => {
+    if (bankLookupCategories.expenseCategories.length > 0) {
+      return bankLookupCategories.expenseCategories;
+    }
+    return expenseCategories;
+  }, [bankLookupCategories.expenseCategories, expenseCategories]);
+
+  const bankIncomeCategoryOptions = useMemo(
+    () => bankLookupCategories.incomeCategories,
+    [bankLookupCategories.incomeCategories]
+  );
+
   const availableBankCategories = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const c of [...expenseCategories, ...transactions.map((t) => t.category ?? '')]) {
+    for (const c of [
+      ...bankExpenseCategoryOptions,
+      ...bankIncomeCategoryOptions,
+      ...transactions.map((t) => t.category ?? ''),
+    ]) {
       const trimmed = c.trim();
       if (!trimmed) continue;
       const key = trimmed.toLowerCase();
@@ -1086,7 +1235,7 @@ export default function App() {
       }
     }
     return out.sort((a, b) => a.localeCompare(b));
-  }, [expenseCategories, transactions]);
+  }, [bankExpenseCategoryOptions, bankIncomeCategoryOptions, transactions]);
 
   const dateBounds = useMemo(() => {
     let minDate = '';
@@ -1198,7 +1347,7 @@ export default function App() {
       }
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -1281,7 +1430,7 @@ export default function App() {
       if (endDate && tx.date > endDate) continue;
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
 
@@ -1363,7 +1512,7 @@ export default function App() {
       if (endDate && tx.date > endDate) continue;
       if (q) {
         const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
 
@@ -1549,6 +1698,7 @@ export default function App() {
           isLoggingIn={isLoggingIn}
           onSignIn={handleSignIn}
           onAuthExpired={() => setNeedsAuth(true)}
+          onCheckRecordsChange={setCheckLedgerRecords}
         />
       ) : activeModule === 'chatbot' ? (
         <ChatbotModule
@@ -1808,7 +1958,7 @@ export default function App() {
                   <span aria-hidden="true">/</span>
                   <span className="font-medium text-slate-800">{account} Tab</span>
                   <span aria-hidden="true">·</span>
-                  <span>10-Column Incremental Upsert</span>
+                  <span>11-Column Incremental Upsert</span>
                 </div>
                 <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   Statement Processing &amp; Ledger Preview
@@ -2445,6 +2595,51 @@ export default function App() {
               </div>
             )}
 
+            {/* Updated Bank_Ledger Rules Backfill Callout */}
+            {loadedAccounts[account] &&
+              (!sheetLayoutByAccount[account].hasNotesHeader ||
+                bankRuleBackfillUpdates.length > 0) && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle
+                      className="h-4 w-4 shrink-0 text-amber-700"
+                      aria-hidden="true"
+                    />
+                    <span>
+                      {!sheetLayoutByAccount[account].hasNotesHeader &&
+                      bankRuleBackfillUpdates.length === 0 ? (
+                        <>
+                          The <strong>Notes</strong> column is not yet initialized in the{' '}
+                          <strong>{account}</strong> tab.
+                        </>
+                      ) : (
+                        <>
+                          <strong>{bankRuleBackfillUpdates.length.toLocaleString()}</strong>{' '}
+                          existing row(s) in <strong>{account}</strong> can be updated with the new{' '}
+                          <strong>Check Description</strong> (Check_Ledger match),{' '}
+                          <strong>Notes</strong> (Amazon/Home Depot), <strong>Source</strong>, and{' '}
+                          <strong>Reference #</strong> (WT TRN#, Direct Pay Tran ID, CARD 7574/9130, BRANCH, Mobile Ref #) rules.
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleApplyBankRuleUpdates()}
+                    disabled={isApplyingRuleBackfill || needsAuth}
+                    className="rounded-md bg-amber-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+                  >
+                    {isApplyingRuleBackfill
+                      ? 'Updating Bank_Ledger...'
+                      : bankRuleBackfillUpdates.length > 0
+                        ? `Apply Rules to ${bankRuleBackfillUpdates.length} Sheet Row${
+                            bankRuleBackfillUpdates.length === 1 ? '' : 's'
+                          }`
+                        : 'Initialize Notes Column'}
+                  </button>
+                </div>
+              )}
+
             {/* Ledger Table Surface */}
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
               {/* Filter Toolbar */}
@@ -2556,7 +2751,8 @@ export default function App() {
                 isLoggingIn={isLoggingIn}
                 account={account}
                 dateSortOrder={dateSortOrder}
-                categoryOptions={availableBankCategories}
+                expenseCategoryOptions={bankExpenseCategoryOptions}
+                incomeCategoryOptions={bankIncomeCategoryOptions}
                 savingRowKey={savingBankRowKey}
                 onSignIn={handleSignIn}
                 onToggleDateSort={() =>
@@ -2598,7 +2794,8 @@ export default function App() {
       <BankTransactionEditModal
         isOpen={Boolean(editingBankTx)}
         transaction={editingBankTx}
-        categoryOptions={availableBankCategories}
+        expenseCategoryOptions={bankExpenseCategoryOptions}
+        incomeCategoryOptions={bankIncomeCategoryOptions}
         isSaving={isSavingBankModal}
         onClose={() => {
           if (!isSavingBankModal) setEditingBankTx(null);

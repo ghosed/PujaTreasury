@@ -24,6 +24,7 @@ export const SHEET_HEADERS = [
   'Target ID',
   'Is_Recon',
   'Category',
+  'Notes',
 ] as const;
 
 export class SheetsApiError extends Error {
@@ -67,15 +68,38 @@ function normalizeIsRecon(raw: unknown): 'Yes' | 'No' {
 }
 
 function resolveBankExtraColumns(headerRow: Array<string | number>): {
+  descriptionColIndex: number;
+  referenceColIndex: number;
+  sourceColIndex: number;
+  bankColIndex?: number;
   hasTargetIdHeader: boolean;
   targetIdColIndex: number;
   hasIsReconHeader: boolean;
   isReconColIndex: number;
   hasCategoryHeader: boolean;
   categoryColIndex: number;
+  hasNotesHeader: boolean;
+  notesColIndex: number;
 } {
   const normHeaders = headerRow.map((cell) => normalizeHeader(String(cell ?? '')));
   let nextAppendIdx = Math.max(headerRow.length, 7);
+
+  const foundDescIdx = normHeaders.findIndex((h) => h === 'description' || h === 'desc');
+  const descriptionColIndex = foundDescIdx !== -1 ? foundDescIdx : 4;
+
+  const foundRefIdx = normHeaders.findIndex(
+    (h) =>
+      h === 'reference' ||
+      h === 'referenceno' ||
+      h === 'referencenumber' ||
+      h === 'ref' ||
+      h === 'refno' ||
+      h === 'refnumber'
+  );
+  const referenceColIndex = foundRefIdx !== -1 ? foundRefIdx : 5;
+
+  const foundSourceIdx = normHeaders.findIndex((h) => h === 'source');
+  const sourceColIndex = foundSourceIdx !== -1 ? foundSourceIdx : 6;
 
   const foundTargetIdx = normHeaders.findIndex((h) => h === 'targetid');
   const hasTargetIdHeader = foundTargetIdx !== -1;
@@ -89,13 +113,26 @@ function resolveBankExtraColumns(headerRow: Array<string | number>): {
   const hasCategoryHeader = foundCategoryIdx !== -1;
   const categoryColIndex = hasCategoryHeader ? foundCategoryIdx : nextAppendIdx++;
 
+  const foundNotesIdx = normHeaders.findIndex((h) => h === 'notes' || h === 'note');
+  const hasNotesHeader = foundNotesIdx !== -1;
+  const notesColIndex = hasNotesHeader ? foundNotesIdx : nextAppendIdx++;
+
+  const foundBankIdx = normHeaders.findIndex((h) => h === 'bank' || h === 'bankname');
+  const bankColIndex = foundBankIdx !== -1 ? foundBankIdx : undefined;
+
   return {
+    descriptionColIndex,
+    referenceColIndex,
+    sourceColIndex,
+    bankColIndex,
     hasTargetIdHeader,
     targetIdColIndex,
     hasIsReconHeader,
     isReconColIndex,
     hasCategoryHeader,
     categoryColIndex,
+    hasNotesHeader,
+    notesColIndex,
   };
 }
 
@@ -130,12 +167,18 @@ async function sheetsFetch<T>(
 }
 
 export interface BankSheetColumnLayout {
+  descriptionColIndex?: number;
+  referenceColIndex?: number;
+  sourceColIndex?: number;
+  bankColIndex?: number;
   hasTargetIdHeader: boolean;
   targetIdColIndex: number;
   hasIsReconHeader: boolean;
   isReconColIndex: number;
   hasCategoryHeader: boolean;
   categoryColIndex: number;
+  hasNotesHeader: boolean;
+  notesColIndex: number;
 }
 
 export interface LoadedSheetLedger extends BankSheetColumnLayout {
@@ -168,12 +211,17 @@ export async function fetchSheetLedger(
     return {
       spreadsheetTitle,
       tabExists: false,
+      descriptionColIndex: 4,
+      referenceColIndex: 5,
+      sourceColIndex: 6,
       hasTargetIdHeader: false,
       targetIdColIndex: 7,
       hasIsReconHeader: false,
       isReconColIndex: 8,
       hasCategoryHeader: false,
       categoryColIndex: 9,
+      hasNotesHeader: false,
+      notesColIndex: 10,
       transactions,
       existingIds,
     };
@@ -191,12 +239,17 @@ export async function fetchSheetLedger(
   const rows = valuesResp.values ?? [];
   let hasHeaderRow = false;
   let layout: BankSheetColumnLayout = {
+    descriptionColIndex: 4,
+    referenceColIndex: 5,
+    sourceColIndex: 6,
     hasTargetIdHeader: false,
     targetIdColIndex: 7,
     hasIsReconHeader: false,
     isReconColIndex: 8,
     hasCategoryHeader: false,
     categoryColIndex: 9,
+    hasNotesHeader: false,
+    notesColIndex: 10,
   };
 
   if (rows.length > 0) {
@@ -239,9 +292,9 @@ export async function fetchSheetLedger(
           ? 'Income'
           : 'Expense';
 
-    const description = String(row[4] ?? '').trim();
-    const referenceNumber = String(row[5] ?? '').trim();
-    const rawSource = String(row[6] ?? '').trim();
+    const description = String(row[layout.descriptionColIndex ?? 4] ?? '').trim();
+    const referenceNumber = String(row[layout.referenceColIndex ?? 5] ?? '').trim();
+    const rawSource = String(row[layout.sourceColIndex ?? 6] ?? '').trim();
     const source = rawSource || categorizeSource(description);
     const targetId = String(row[layout.targetIdColIndex] ?? '').trim();
     const rawIsRecon = layout.hasIsReconHeader ? row[layout.isReconColIndex] : '';
@@ -250,6 +303,13 @@ export async function fetchSheetLedger(
     const category = layout.hasCategoryHeader
       ? String(row[layout.categoryColIndex] ?? '').trim()
       : '';
+    const notes = layout.hasNotesHeader
+      ? String(row[layout.notesColIndex] ?? '').trim()
+      : '';
+    const bank =
+      typeof layout.bankColIndex === 'number'
+        ? String(row[layout.bankColIndex] ?? '').trim()
+        : '';
     const uniqueId = col0 || `SHEET-${tabName.toUpperCase()}-${i + 1}`;
 
     if (col0) {
@@ -274,6 +334,8 @@ export async function fetchSheetLedger(
       targetId,
       isRecon,
       category,
+      notes,
+      ...(bank ? { bank } : {}),
       sheetRowNumber: i + 1,
     });
   }
@@ -313,6 +375,8 @@ export async function prepareSyncPlan(
     isReconColIndex: 8,
     hasCategoryHeader: false,
     categoryColIndex: 9,
+    hasNotesHeader: false,
+    notesColIndex: 10,
   };
 
   if (tabExists) {
@@ -375,6 +439,8 @@ export async function prepareSyncPlan(
       isReconColIndex: layout.isReconColIndex,
       needsCategoryHeader: !needsHeader && !layout.hasCategoryHeader,
       categoryColIndex: layout.categoryColIndex,
+      needsNotesHeader: !needsHeader && !layout.hasNotesHeader,
+      notesColIndex: layout.notesColIndex,
       existingIdsCount: existingIds.size,
       toAppend,
       skippedAlreadySynced,
@@ -399,6 +465,8 @@ export async function executeSyncPlan(
     isReconColIndex = 8,
     needsCategoryHeader,
     categoryColIndex = 9,
+    needsNotesHeader,
+    notesColIndex = 10,
     toAppend,
     skippedAlreadySynced,
   } = plan;
@@ -426,7 +494,7 @@ export async function executeSyncPlan(
     );
   } else if (
     !needsHeader &&
-    (needsTargetIdHeader || needsIsReconHeader || needsCategoryHeader)
+    (needsTargetIdHeader || needsIsReconHeader || needsCategoryHeader || needsNotesHeader)
   ) {
     const safeTab = `'${tabName.replace(/'/g, "''")}'`;
     const headerData: Array<{ range: string; values: string[][] }> = [];
@@ -448,6 +516,12 @@ export async function executeSyncPlan(
         values: [['Category']],
       });
     }
+    if (needsNotesHeader) {
+      headerData.push({
+        range: `${safeTab}!${colIndexToA1(notesColIndex)}1`,
+        values: [['Notes']],
+      });
+    }
 
     if (headerData.length > 0) {
       await sheetsFetch(
@@ -466,20 +540,26 @@ export async function executeSyncPlan(
     }
   }
 
-  const maxColIdx = Math.max(targetIdColIndex, isReconColIndex, categoryColIndex);
+  const maxColIdx = Math.max(
+    targetIdColIndex,
+    isReconColIndex,
+    categoryColIndex,
+    notesColIndex
+  );
   const rowsToWrite: Array<Array<string | number>> = [];
   if (needsHeader) {
     rowsToWrite.push([...SHEET_HEADERS]);
   }
 
   for (const tx of toAppend) {
+    const safeReference = tx.referenceNumber ? `'${tx.referenceNumber}` : '';
     const row: Array<string | number> = [
       tx.uniqueId,
       tx.date,
       tx.amount,
       tx.transactionType,
       tx.description,
-      tx.referenceNumber,
+      safeReference,
       tx.source,
     ];
     while (row.length <= maxColIdx) {
@@ -488,6 +568,7 @@ export async function executeSyncPlan(
     row[targetIdColIndex] = tx.targetId ?? '';
     row[isReconColIndex] = tx.isRecon ?? 'No';
     row[categoryColIndex] = tx.category ?? '';
+    row[notesColIndex] = tx.notes ?? '';
     rowsToWrite.push(row);
   }
 
@@ -531,6 +612,7 @@ export interface BankReconcileRowUpdate {
   targetId?: string;
   isRecon?: 'Yes' | 'No';
   category?: string;
+  notes?: string;
 }
 
 export async function batchUpdateBankReconciliation(
@@ -561,6 +643,16 @@ export async function batchUpdateBankReconciliation(
       values: [['Category']],
     });
   }
+  if (!layout.hasNotesHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(layout.notesColIndex)}1`,
+      values: [['Notes']],
+    });
+  }
+
+  const descColA1 = colIndexToA1(layout.descriptionColIndex ?? 4);
+  const refColA1 = colIndexToA1(layout.referenceColIndex ?? 5);
+  const sourceColA1 = colIndexToA1(layout.sourceColIndex ?? 6);
 
   let rowUpdatesCount = 0;
   for (const upd of updates) {
@@ -568,21 +660,21 @@ export async function batchUpdateBankReconciliation(
     let touched = false;
     if (upd.description !== undefined) {
       data.push({
-        range: `${safeTab}!E${upd.sheetRowNumber}`,
+        range: `${safeTab}!${descColA1}${upd.sheetRowNumber}`,
         values: [[upd.description]],
       });
       touched = true;
     }
     if (upd.referenceNumber !== undefined) {
       data.push({
-        range: `${safeTab}!F${upd.sheetRowNumber}`,
+        range: `${safeTab}!${refColA1}${upd.sheetRowNumber}`,
         values: [[upd.referenceNumber]],
       });
       touched = true;
     }
     if (upd.source !== undefined) {
       data.push({
-        range: `${safeTab}!G${upd.sheetRowNumber}`,
+        range: `${safeTab}!${sourceColA1}${upd.sheetRowNumber}`,
         values: [[upd.source]],
       });
       touched = true;
@@ -608,6 +700,13 @@ export async function batchUpdateBankReconciliation(
       });
       touched = true;
     }
+    if (upd.notes !== undefined) {
+      data.push({
+        range: `${safeTab}!${colIndexToA1(layout.notesColIndex)}${upd.sheetRowNumber}`,
+        values: [[upd.notes]],
+      });
+      touched = true;
+    }
     if (touched) rowUpdatesCount++;
   }
 
@@ -624,7 +723,7 @@ export async function batchUpdateBankReconciliation(
       {
         method: 'POST',
         body: JSON.stringify({
-          valueInputOption: 'USER_ENTERED',
+          valueInputOption: 'RAW',
           data: chunk,
         }),
       }
@@ -632,4 +731,114 @@ export async function batchUpdateBankReconciliation(
   }
 
   return rowUpdatesCount;
+}
+
+export interface BankLookUpCategories {
+  expenseCategories: string[];
+  incomeCategories: string[];
+}
+
+function uniqueCategoryList(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(trimmed);
+    }
+  }
+  return out;
+}
+
+export function parseBankLookUpRows(
+  rows: Array<Array<string | number>>
+): BankLookUpCategories {
+  const nonEmptyRows = rows.filter((r) =>
+    (r ?? []).some((cell) => String(cell ?? '').trim() !== '')
+  );
+  if (nonEmptyRows.length === 0) {
+    return { expenseCategories: [], incomeCategories: [] };
+  }
+
+  let expenseCol = 0;
+  let incomeCol = 1;
+  let startIdx = 0;
+
+  const scanLimit = Math.min(nonEmptyRows.length, 5);
+  for (let r = 0; r < scanLimit; r++) {
+    const row = (nonEmptyRows[r] ?? []).map((cell) => normalizeHeader(String(cell ?? '')));
+    const expIdx = row.findIndex(
+      (h) =>
+        h === 'expense' ||
+        h === 'expenses' ||
+        h === 'category' ||
+        h === 'categories' ||
+        h.includes('expensecategor') ||
+        h.includes('categoryexpense')
+    );
+    const incIdx = row.findIndex(
+      (h) =>
+        h === 'income' ||
+        h === 'incomes' ||
+        h.includes('incomecategor') ||
+        h.includes('categoryincome')
+    );
+
+    if (expIdx !== -1 || incIdx !== -1) {
+      if (expIdx !== -1) expenseCol = expIdx;
+      if (incIdx !== -1) incomeCol = incIdx;
+      startIdx = r + 1;
+      break;
+    }
+  }
+
+  const rawExpense: string[] = [];
+  const rawIncome: string[] = [];
+
+  for (let i = startIdx; i < nonEmptyRows.length; i++) {
+    const row = nonEmptyRows[i] ?? [];
+    const expVal = String(row[expenseCol] ?? '').trim();
+    const incVal = String(row[incomeCol] ?? '').trim();
+    if (expVal) rawExpense.push(expVal);
+    if (incVal) rawIncome.push(incVal);
+  }
+
+  return {
+    expenseCategories: uniqueCategoryList(rawExpense),
+    incomeCategories: uniqueCategoryList(rawIncome),
+  };
+}
+
+export async function fetchBankLookUpCategories(
+  accessToken: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<BankLookUpCategories> {
+  const meta = await sheetsFetch<SpreadsheetMetadata>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}?fields=sheets.properties`,
+    accessToken
+  );
+
+  const lookupSheetTitle = meta.sheets
+    ?.map((s) => s.properties?.title)
+    .find((t) => Boolean(t && normalizeHeader(t) === 'lookup'));
+
+  if (!lookupSheetTitle) {
+    return { expenseCategories: [], incomeCategories: [] };
+  }
+
+  const safeTab = `'${lookupSheetTitle.replace(/'/g, "''")}'`;
+  const range = encodeURIComponent(`${safeTab}!A:Z`);
+  const resp = await sheetsFetch<{ values?: Array<Array<string | number>> }>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      spreadsheetId
+    )}/values/${range}?valueRenderOption=FORMATTED_VALUE`,
+    accessToken
+  );
+
+  return parseBankLookUpRows(resp.values ?? []);
 }

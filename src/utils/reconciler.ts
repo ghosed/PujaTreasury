@@ -106,8 +106,9 @@ function scoreCandidate(
     reasons.push(`Ref #${tx.referenceNumber}`);
   }
 
-  // Source / Payment Mode alignment
+  // Source / Notes / Payment Mode alignment
   const srcLower = tx.source.toLowerCase();
+  const notesLower = (tx.notes ?? '').toLowerCase();
   const modeLower = expense.paymentMode.toLowerCase();
   const descLower = expense.description.toLowerCase();
 
@@ -119,13 +120,13 @@ function scoreCandidate(
       (modeLower.includes('card') ||
         modeLower.includes('credit') ||
         modeLower.includes('debit'))) ||
-    (srcLower === 'amazon' && expHaystack.includes('amazon')) ||
-    (srcLower === 'home depot' &&
+    ((srcLower === 'amazon' || notesLower === 'amazon') && expHaystack.includes('amazon')) ||
+    ((srcLower === 'home depot' || notesLower === 'home depot') &&
       (expHaystack.includes('home depot') || expHaystack.includes('homedepot'))) ||
     (srcLower === 'wt' && (modeLower.includes('wire') || descLower.includes('wire')))
   ) {
     score += 25;
-    reasons.push(`${tx.source} mode`);
+    reasons.push(`${tx.notes || tx.source} mode`);
   }
 
   // Tab <-> Puja hint
@@ -137,7 +138,7 @@ function scoreCandidate(
   }
 
   // Token overlap across description, category, subcategory
-  const bankTokens = extractTokens(`${tx.description} ${tx.source}`);
+  const bankTokens = extractTokens(`${tx.description} ${tx.source} ${tx.notes ?? ''}`);
   const expTokens = extractTokens(
     `${expense.description} ${expense.category} ${expense.subCategory}`
   );

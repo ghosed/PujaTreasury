@@ -30,6 +30,7 @@ export const CANONICAL_CHECK_HEADERS = [
   'Transaction Type',
   'Is_Recon',
   'Routing Number',
+  'Category',
 ] as const;
 
 interface SpreadsheetMetadata {
@@ -104,7 +105,8 @@ type CheckFieldKey =
   | 'memo'
   | 'transactionType'
   | 'isRecon'
-  | 'routingNumber';
+  | 'routingNumber'
+  | 'category';
 
 const HEADER_TO_CHECK_FIELD: Record<string, CheckFieldKey> = {
   uniqueid: 'uniqueId',
@@ -139,6 +141,8 @@ const HEADER_TO_CHECK_FIELD: Record<string, CheckFieldKey> = {
   routing: 'routingNumber',
   rtn: 'routingNumber',
   abarouting: 'routingNumber',
+  category: 'category',
+  cat: 'category',
 };
 
 function buildCheckFieldMap(headers: string[]): Map<CheckFieldKey, number> {
@@ -157,7 +161,11 @@ function serializeCheckRow(
   record: CheckRecord,
   meta: Pick<
     CheckSheetMeta,
-    'columnHeaders' | 'transactionTypeColIndex' | 'isReconColIndex' | 'routingNumberColIndex'
+    | 'columnHeaders'
+    | 'transactionTypeColIndex'
+    | 'isReconColIndex'
+    | 'routingNumberColIndex'
+    | 'categoryColIndex'
   >
 ): Array<string | number> {
   const fieldToIdx = buildCheckFieldMap(meta.columnHeaders);
@@ -166,7 +174,8 @@ function serializeCheckRow(
     CANONICAL_CHECK_HEADERS.length,
     meta.transactionTypeColIndex + 1,
     meta.isReconColIndex + 1,
-    meta.routingNumberColIndex + 1
+    meta.routingNumberColIndex + 1,
+    meta.categoryColIndex + 1
   );
   const row: Array<string | number> = record.rawRowValues
     ? [...record.rawRowValues]
@@ -193,6 +202,7 @@ function serializeCheckRow(
   setField('transactionType', record.transactionType, meta.transactionTypeColIndex);
   setField('isRecon', record.isRecon || 'No', meta.isReconColIndex);
   setField('routingNumber', record.routingNumber || '', meta.routingNumberColIndex);
+  setField('category', record.category || '', meta.categoryColIndex);
 
   return row;
 }
@@ -280,6 +290,10 @@ export async function fetchCheckLedger(
   const routingNumberColIndex =
     fieldIdx.get('routingNumber') ?? (needsHeader ? 10 : nextExtraIdx++);
 
+  const hasCategoryHeader = needsHeader ? true : fieldIdx.has('category');
+  const categoryColIndex =
+    fieldIdx.get('category') ?? (needsHeader ? 11 : nextExtraIdx++);
+
   const startRowIdx = needsHeader ? 0 : 1;
   const records: CheckRecord[] = [];
   const existingIds = new Set<string>();
@@ -336,6 +350,9 @@ export async function fetchCheckLedger(
       : '';
     const isRecon: 'Yes' | 'No' =
       rawIsRecon !== '' ? normalizeIsRecon(rawIsRecon) : 'No';
+    const category = hasCategoryHeader
+      ? String(row[categoryColIndex] ?? '').trim()
+      : '';
 
     const deterministicId = buildCheckUniqueId(checkNumber, routingNumber, date, bank);
     const uniqueId = rawUniqueId || deterministicId;
@@ -368,6 +385,7 @@ export async function fetchCheckLedger(
       memo,
       transactionType,
       isRecon,
+      category,
       sourceOrigin: 'sheet',
       sheetRowNumber: i + 1,
       rawRowValues: row,
@@ -384,9 +402,11 @@ export async function fetchCheckLedger(
       hasTransactionTypeHeader,
       hasIsReconHeader,
       hasRoutingNumberHeader,
+      hasCategoryHeader,
       transactionTypeColIndex,
       isReconColIndex,
       routingNumberColIndex,
+      categoryColIndex,
       columnHeaders,
     },
     records,
@@ -419,6 +439,12 @@ async function ensureCheckExtraHeaders(
     data.push({
       range: `${safeTab}!${colIndexToA1(meta.routingNumberColIndex)}1`,
       values: [['Routing Number']],
+    });
+  }
+  if (!meta.hasCategoryHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(meta.categoryColIndex)}1`,
+      values: [['Category']],
     });
   }
 
@@ -571,7 +597,8 @@ export async function updateCheckRecord(
       meta.columnHeaders.length,
       meta.transactionTypeColIndex + 1,
       meta.isReconColIndex + 1,
-      meta.routingNumberColIndex + 1
+      meta.routingNumberColIndex + 1,
+      meta.categoryColIndex + 1
     ) - 1
   );
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
@@ -655,4 +682,72 @@ export async function updateCheckIsRecon(
       }),
     }
   );
+}
+
+export async function updateCheckCategory(
+  accessToken: string,
+  meta: CheckSheetMeta,
+  sheetRowNumber: number,
+  category: string
+): Promise<void> {
+  if (!sheetRowNumber || sheetRowNumber < 1) {
+    throw new Error('Cannot update Category for an unsaved check record.');
+  }
+
+  await ensureCheckExtraHeaders(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.categoryColIndex);
+  const range = encodeURIComponent(`${safeTab}!${colA1}${sheetRowNumber}`);
+
+  await sheetsFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      meta.spreadsheetId
+    )}/values/${range}?valueInputOption=RAW`,
+    accessToken,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        majorDimension: 'ROWS',
+        values: [[category]],
+      }),
+    }
+  );
+}
+
+export async function batchUpdateCheckCategories(
+  accessToken: string,
+  meta: CheckSheetMeta,
+  updates: Array<{ sheetRowNumber: number; category: string }>
+): Promise<number> {
+  const validUpdates = updates.filter(
+    (u) => Number.isFinite(u.sheetRowNumber) && u.sheetRowNumber >= 1
+  );
+  if (validUpdates.length === 0) return 0;
+
+  await ensureCheckExtraHeaders(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.categoryColIndex);
+
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < validUpdates.length; i += CHUNK_SIZE) {
+    const chunk = validUpdates.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'RAW',
+          data: chunk.map((u) => ({
+            range: `${safeTab}!${colA1}${u.sheetRowNumber}`,
+            values: [[u.category.trim()]],
+          })),
+        }),
+      }
+    );
+  }
+
+  return validUpdates.length;
 }

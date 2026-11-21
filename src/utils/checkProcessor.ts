@@ -251,6 +251,7 @@ export function processScannedCheckFiles(
       const transactionType =
         ov?.transactionType ?? deriveCheckTransactionType(paidBy);
       const isRecon: 'Yes' | 'No' = ov?.isRecon === 'Yes' ? 'Yes' : 'No';
+      const category = (ov?.category ?? raw.category ?? '').trim();
 
       const uniqueId = buildCheckUniqueId(checkNumber, routingNumber, date, bank);
       const canonicalKey = buildCheckCanonicalKey(checkNumber, bank, date);
@@ -284,6 +285,7 @@ export function processScannedCheckFiles(
           memo,
           transactionType,
           isRecon,
+          category,
           sourceOrigin: 'scan',
           sourceFileName: file.fileName,
           isDuplicate: true,
@@ -316,6 +318,7 @@ export function processScannedCheckFiles(
         memo,
         transactionType,
         isRecon,
+        category,
         sourceOrigin: 'scan',
         sourceFileName: file.fileName,
         isDuplicate: false,

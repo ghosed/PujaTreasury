@@ -9,12 +9,14 @@ export interface BankTransactionEditPayload {
   targetId: string;
   isRecon: 'Yes' | 'No';
   category: string;
+  notes: string;
 }
 
 interface BankTransactionEditModalProps {
   isOpen: boolean;
   transaction: NormalizedTransaction | null;
-  categoryOptions: string[];
+  expenseCategoryOptions: string[];
+  incomeCategoryOptions: string[];
   isSaving: boolean;
   onClose: () => void;
   onSave: (
@@ -26,7 +28,8 @@ interface BankTransactionEditModalProps {
 export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> = ({
   isOpen,
   transaction,
-  categoryOptions,
+  expenseCategoryOptions,
+  incomeCategoryOptions,
   isSaving,
   onClose,
   onSave,
@@ -37,6 +40,7 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
   const [targetId, setTargetId] = useState('');
   const [isRecon, setIsRecon] = useState<'Yes' | 'No'>('No');
   const [category, setCategory] = useState('');
+  const [notes, setNotes] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -52,16 +56,20 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
         : 'No'
     );
     setCategory((transaction.category ?? '').trim());
+    setNotes((transaction.notes ?? '').trim());
   }, [isOpen, transaction]);
 
   const effectiveCategories = useMemo(() => {
-    const base = [...categoryOptions];
+    const base =
+      transaction?.transactionType === 'Income'
+        ? [...incomeCategoryOptions]
+        : [...expenseCategoryOptions];
     const trimmed = category.trim();
     if (trimmed && !base.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
       base.unshift(trimmed);
     }
     return base;
-  }, [categoryOptions, category]);
+  }, [transaction?.transactionType, expenseCategoryOptions, incomeCategoryOptions, category]);
 
   if (!isOpen || !transaction) return null;
 
@@ -96,6 +104,7 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
       targetId: trimmedTarget,
       isRecon: trimmedTarget ? 'Yes' : isRecon,
       category: category.trim(),
+      notes: notes.trim(),
     });
   };
 
@@ -262,6 +271,21 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
                 disabled={isSaving}
                 placeholder="Check #, confirmation, or trace ID"
                 className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none disabled:opacity-60"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="bank-edit-notes" className="block text-xs font-medium text-slate-700">
+                Notes
+              </label>
+              <input
+                id="bank-edit-notes"
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                disabled={isSaving}
+                placeholder="e.g. Amazon or Home Depot"
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none disabled:opacity-60"
               />
             </div>
 

@@ -105,6 +105,7 @@ export const CheckSyncConfirmModal: React.FC<CheckSyncConfirmModalProps> = ({
                       <th className="px-3 py-1.5 text-right font-medium whitespace-nowrap">Amount</th>
                       <th className="px-3 py-1.5 font-medium">Paid To</th>
                       <th className="px-3 py-1.5 font-medium">Paid By</th>
+                      <th className="px-3 py-1.5 font-medium">Category</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -147,6 +148,9 @@ export const CheckSyncConfirmModal: React.FC<CheckSyncConfirmModalProps> = ({
                         </td>
                         <td className="max-w-[130px] truncate px-3 py-1.5 text-[11px]">
                           {chk.paidBy || '—'}
+                        </td>
+                        <td className="max-w-[130px] truncate px-3 py-1.5 text-[11px]">
+                          {chk.category || '—'}
                         </td>
                       </tr>
                     ))}

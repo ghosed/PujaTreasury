@@ -1,11 +1,49 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import type {
+  CheckCategorizeHistoricalExample,
   CheckCategorizeRequest,
   CheckCategorizeResponse,
 } from '../src/types/check.ts';
-import { GOLD_CHECK_CATEGORY_EXAMPLES } from '../src/utils/checkCategorizer.ts';
 
 const DEFAULT_MODEL = 'gemini-4-hydrogen';
+
+const GOLD_CHECK_CATEGORY_EXAMPLES: CheckCategorizeHistoricalExample[] = [
+  {
+    memo: 'Ad',
+    transactionType: 'Income',
+    paidTo: 'Durga Bari',
+    paidBy: 'SUKOON HOSPITALITY LLC',
+    category: 'Advertisement',
+  },
+  {
+    memo: 'Decoration',
+    transactionType: 'Expense',
+    paidTo: 'Nivedita Hati',
+    paidBy: 'Houston Durga Bari Society',
+    category: 'Decoration',
+  },
+  {
+    memo: 'Registration & Printing',
+    transactionType: 'Expense',
+    paidTo: 'Subhas Das',
+    paidBy: 'Houston Durga Bari Society',
+    category: 'Registration',
+  },
+  {
+    memo: 'KFC Grocery',
+    transactionType: 'Expense',
+    paidTo: 'World Food Warehouse',
+    paidBy: 'Houston Durga Bari Society',
+    category: 'Food',
+  },
+  {
+    memo: 'FOR CHURO $8,000 AND GENERAL FUND $2,000',
+    transactionType: 'Income',
+    paidTo: 'HDBS',
+    paidBy: 'ASOKE KUMAR DEYSARKAR',
+    category: 'Sponsorship',
+  },
+];
 
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;

@@ -3,9 +3,7 @@ import { User } from 'firebase/auth';
 import {
   AlertCircle,
   AlertTriangle,
-  ArrowDownRight,
   ArrowLeftRight,
-  ArrowUpRight,
   Calendar,
   CheckCircle2,
   Columns3,
@@ -1394,27 +1392,63 @@ export default function App() {
   const financialTotals = useMemo(() => {
     let incomeCents = 0;
     let incomeCount = 0;
+    let unreconIncomeCents = 0;
+    let incomeMinDate = '';
+    let incomeMaxDate = '';
     let expenseCents = 0;
     let expenseCount = 0;
+    let unreconExpenseCents = 0;
+    let expenseMinDate = '';
+    let expenseMaxDate = '';
 
     for (const tx of filteredTransactions) {
       if (tx.reviewStatus === 'discarded') continue;
+      const isUnrecon = (tx.isRecon ?? 'No') !== 'Yes';
       if (tx.transactionType === 'Income') {
         incomeCents += tx.amountCents;
         incomeCount++;
+        if (isUnrecon) {
+          unreconIncomeCents += Math.abs(tx.amountCents);
+        }
+        if (tx.date) {
+          if (!incomeMinDate || tx.date < incomeMinDate) incomeMinDate = tx.date;
+          if (!incomeMaxDate || tx.date > incomeMaxDate) incomeMaxDate = tx.date;
+        }
       } else {
-        expenseCents += Math.abs(tx.amountCents);
+        const absCents = Math.abs(tx.amountCents);
+        expenseCents += absCents;
         expenseCount++;
+        if (isUnrecon) {
+          unreconExpenseCents += absCents;
+        }
+        if (tx.date) {
+          if (!expenseMinDate || tx.date < expenseMinDate) expenseMinDate = tx.date;
+          if (!expenseMaxDate || tx.date > expenseMaxDate) expenseMaxDate = tx.date;
+        }
       }
     }
 
     return {
       income: incomeCents / 100,
       incomeCount,
+      unreconIncome: unreconIncomeCents / 100,
+      incomeFromDate: startDate || incomeMinDate || dateBounds.minDate,
+      incomeToDate: endDate || incomeMaxDate || dateBounds.maxDate,
       expense: expenseCents / 100,
       expenseCount,
+      unreconExpense: unreconExpenseCents / 100,
+      expenseFromDate: startDate || expenseMinDate || dateBounds.minDate,
+      expenseToDate: endDate || expenseMaxDate || dateBounds.maxDate,
     };
-  }, [filteredTransactions]);
+  }, [filteredTransactions, startDate, endDate, dateBounds.minDate, dateBounds.maxDate]);
+
+  const formatSlashDate = (isoDate: string): string => {
+    if (!isoDate) return '--/--/----';
+    const parts = isoDate.split('-');
+    if (parts.length !== 3) return isoDate;
+    const [y, m, d] = parts;
+    return `${m.padStart(2, '0')}/${d.padStart(2, '0')}/${y}`;
+  };
 
   const { sourceSummaryMap, extraSources, activeSourceCount } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -2054,8 +2088,6 @@ export default function App() {
                   <span>Accounts</span>
                   <span aria-hidden="true">/</span>
                   <span className="font-medium text-slate-800">{account} Tab</span>
-                  <span aria-hidden="true">·</span>
-                  <span>11-Column Incremental Upsert</span>
                 </div>
                 <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-900">
                   Statement Processing &amp; Ledger Preview
@@ -2193,50 +2225,88 @@ export default function App() {
             {/* Total Income & Total Expense Cards */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="rounded-lg border border-slate-200 bg-white px-5 py-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-600">Total Income</span>
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
-                    <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
-                    Income
-                  </span>
-                </div>
-                <div className="mt-2 font-mono text-2xl font-semibold tracking-tight text-emerald-700 tabular-nums">
-                  {financialTotals.income.toLocaleString('en-US', {
-                    style: 'currency',
-                    currency: 'USD',
-                  })}
-                </div>
-                <div className="mt-1.5 text-xs text-slate-500">
-                  <span className="font-mono tabular-nums">
-                    {financialTotals.incomeCount.toLocaleString()}
-                  </span>{' '}
-                  {financialTotals.incomeCount === 1 ? 'transaction' : 'transactions'}
-                  <span aria-hidden="true"> · </span>
-                  <span className="font-mono tabular-nums">{periodLabel}</span>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-base font-semibold text-slate-900">Total Income</span>
+                      <span className="text-xs text-slate-500">
+                        <span className="font-mono tabular-nums">
+                          {financialTotals.incomeCount.toLocaleString()}
+                        </span>{' '}
+                        {financialTotals.incomeCount === 1 ? 'transaction' : 'transactions'}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-xs text-slate-600">
+                      From:{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatSlashDate(financialTotals.incomeFromDate)}
+                      </span>{' '}
+                      to{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatSlashDate(financialTotals.incomeToDate)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="font-mono text-2xl font-semibold tracking-tight text-emerald-700 tabular-nums">
+                      {financialTotals.income.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">
+                      Un-Recon Income:{' '}
+                      <span className="font-mono font-semibold text-emerald-600 tabular-nums">
+                        {financialTotals.unreconIncome.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: 'USD',
+                        })}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-white px-5 py-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-600">Total Expense</span>
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700">
-                    <ArrowDownRight className="h-3.5 w-3.5" aria-hidden="true" />
-                    Expense
-                  </span>
-                </div>
-                <div className="mt-2 font-mono text-2xl font-semibold tracking-tight text-red-700 tabular-nums">
-                  {financialTotals.expense.toLocaleString('en-US', {
-                    style: 'currency',
-                    currency: 'USD',
-                  })}
-                </div>
-                <div className="mt-1.5 text-xs text-slate-500">
-                  <span className="font-mono tabular-nums">
-                    {financialTotals.expenseCount.toLocaleString()}
-                  </span>{' '}
-                  {financialTotals.expenseCount === 1 ? 'transaction' : 'transactions'}
-                  <span aria-hidden="true"> · </span>
-                  <span className="font-mono tabular-nums">{periodLabel}</span>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="text-base font-semibold text-slate-900">Total Expense</span>
+                      <span className="text-xs text-slate-500">
+                        <span className="font-mono tabular-nums">
+                          {financialTotals.expenseCount.toLocaleString()}
+                        </span>{' '}
+                        {financialTotals.expenseCount === 1 ? 'transaction' : 'transactions'}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-xs text-slate-600">
+                      From:{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatSlashDate(financialTotals.expenseFromDate)}
+                      </span>{' '}
+                      to{' '}
+                      <span className="font-mono tabular-nums">
+                        {formatSlashDate(financialTotals.expenseToDate)}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="font-mono text-2xl font-semibold tracking-tight text-red-700 tabular-nums">
+                      {financialTotals.expense.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}
+                    </div>
+                    <div className="mt-1 text-sm text-slate-700">
+                      Un-Recon Expense:{' '}
+                      <span className="font-mono font-semibold text-red-700 tabular-nums">
+                        {financialTotals.unreconExpense.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: 'USD',
+                        })}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

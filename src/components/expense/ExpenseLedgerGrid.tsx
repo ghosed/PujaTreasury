@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { ExpenseRecord } from '../../types/expense';
 import { GoogleSignInButton } from '../GoogleSignInButton';
+import { TablePagination } from '../TablePagination';
 
 interface ExpenseLedgerGridProps {
   records: ExpenseRecord[];
@@ -42,6 +43,22 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
   onOpenManualEntry,
   onResetFilters,
 }) => {
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const paginatedRecords = useMemo(() => {
+    const startIdx = (safePage - 1) * pageSize;
+    return records.slice(startIdx, startIdx + pageSize);
+  }, [records, safePage, pageSize]);
   if (isLoading) {
     return (
       <div className="divide-y divide-slate-100">
@@ -149,8 +166,9 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
         <table className="w-full border-collapse text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-              <th className="px-4 py-2.5 font-medium whitespace-nowrap">State / Edit</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+              <th className="py-2 pl-3 pr-2 font-medium whitespace-nowrap">Action</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">State</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">
                 <button
                   type="button"
                   onClick={onToggleDateSort}
@@ -159,7 +177,7 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                     dateSortOrder === 'desc' ? 'newest first' : 'oldest first'
                   } (click to toggle)`}
                 >
-                  <span>Date</span>
+                  <span>Date / Exp_ID</span>
                   {dateSortOrder === 'desc' ? (
                     <ArrowDown className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
                   ) : (
@@ -167,24 +185,21 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                   )}
                 </button>
               </th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Exp_ID</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+              <th className="px-2 py-2 font-medium whitespace-nowrap">
                 Category / Sub Category
               </th>
-              <th className="px-3 py-2.5 text-right font-medium whitespace-nowrap">Amount</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Status</th>
-              <th className="px-3 py-2.5 font-medium">Description</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
-                Puja / Payment Mode
+              <th className="px-2 py-2 text-right font-medium whitespace-nowrap">
+                Amount / Mode
               </th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Is_Recon</th>
-              <th className="px-4 py-2.5 font-medium whitespace-nowrap">
-                Recon Source / Recon Source_ID
+              <th className="px-2 py-2 font-medium whitespace-nowrap">Status</th>
+              <th className="px-2 py-2 font-medium">Description</th>
+              <th className="py-2 pl-2 pr-3 font-medium whitespace-nowrap">
+                Recon Source / ID
               </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {records.map((rec) => {
+            {paginatedRecords.map((rec) => {
               const isStaged = rec.sourceOrigin === 'csv';
               const statusLower = rec.status.trim().toLowerCase();
               const statusColor =
@@ -201,104 +216,131 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                     isStaged ? 'bg-teal-50/30 hover:bg-teal-50/60' : 'hover:bg-slate-50/80'
                   }`}
                 >
-                  <td className="px-4 py-2.5 whitespace-nowrap">
-                    <div className="inline-flex items-center gap-2.5">
-                      <button
-                        type="button"
-                        onClick={() => onEditRecord(rec)}
-                        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:text-teal-800"
-                        title={`Edit ${rec.expId}`}
-                      >
-                        <Pencil className="h-3 w-3" aria-hidden="true" />
-                        Edit
-                      </button>
-                      <span
-                        className={`text-[11px] ${
-                          isStaged ? 'font-medium text-teal-700' : 'text-slate-500'
-                        }`}
-                      >
-                        {isStaged ? 'Staged (CSV)' : 'In Sheet'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">
-                    {rec.date}
-                  </td>
-                  <td className="px-3 py-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap tabular-nums">
-                    {rec.expId}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <div className="font-medium text-slate-800 whitespace-nowrap">
-                      {rec.category || '—'}
-                    </div>
-                    {rec.subCategory && (
-                      <div className="mt-0.5 text-[11px] text-slate-500 whitespace-nowrap">
-                        {rec.subCategory}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-right font-mono text-[12px] font-medium text-slate-900 whitespace-nowrap tabular-nums">
-                    {rec.amount.toLocaleString('en-US', {
-                      style: 'currency',
-                      currency: 'USD',
-                    })}
-                  </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    <span className={`font-medium ${statusColor}`}>{rec.status || '—'}</span>
-                  </td>
-                  <td className="max-w-[260px] px-3 py-2.5">
-                    <div className="truncate text-slate-800" title={rec.description}>
-                      {rec.description || '—'}
-                    </div>
-                    {rec.sourceFileName && (
-                      <div className="mt-0.5 truncate text-[11px] text-slate-400">
-                        {rec.sourceFileName}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <div className="text-slate-700 whitespace-nowrap">{rec.puja || '—'}</div>
-                    {rec.paymentMode && (
-                      <div className="mt-0.5 text-[11px] text-slate-500 whitespace-nowrap">
-                        {rec.paymentMode}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap">
+                  <td className="py-2 pl-3 pr-2 whitespace-nowrap">
                     {(() => {
                       const isLinked = rec.reconSourceId.trim() !== '';
                       const isLockedYes = isLinked && rec.isRecon === 'Yes';
                       return (
-                        <select
-                          value={rec.isRecon === 'Yes' ? 'Yes' : 'No'}
-                          onChange={(e) =>
-                            onUpdateIsRecon(rec, e.target.value === 'Yes' ? 'Yes' : 'No')
-                          }
-                          disabled={updatingReconExpId === rec.expId || isLockedYes}
-                          aria-label={`Is_Recon for ${rec.expId}`}
-                          title={
-                            isLockedYes
-                              ? 'Locked to Yes while linked to Bank_Ledger'
-                              : `Set Is_Recon for ${rec.expId}`
-                          }
-                          className={`rounded border bg-white px-2 py-1 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
-                            rec.isRecon === 'Yes'
-                              ? 'border-emerald-300 text-emerald-800'
-                              : 'border-slate-300 text-slate-700'
-                          }`}
-                        >
-                          <option value="No">No</option>
-                          <option value="Yes">Yes</option>
-                        </select>
+                        <div className="space-y-1">
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => onEditRecord(rec)}
+                              aria-label={`Edit ${rec.expId}`}
+                              title={`Edit ${rec.expId}`}
+                              className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 hover:text-teal-800"
+                            >
+                              <Pencil className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                          </div>
+                          <div>
+                            <select
+                              value={rec.isRecon === 'Yes' ? 'Yes' : 'No'}
+                              onChange={(e) =>
+                                onUpdateIsRecon(rec, e.target.value === 'Yes' ? 'Yes' : 'No')
+                              }
+                              disabled={updatingReconExpId === rec.expId || isLockedYes}
+                              aria-label={`Is_Recon for ${rec.expId}`}
+                              title={
+                                isLockedYes
+                                  ? 'Locked to Yes while linked to Bank_Ledger'
+                                  : `Set Is_Recon for ${rec.expId}`
+                              }
+                              className={`rounded border bg-white px-1.5 py-0.5 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
+                                rec.isRecon === 'Yes'
+                                  ? 'border-emerald-300 text-emerald-800'
+                                  : 'border-slate-300 text-slate-700'
+                              }`}
+                            >
+                              <option value="No">No</option>
+                              <option value="Yes">Yes</option>
+                            </select>
+                          </div>
+                        </div>
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-2.5">
-                    <div className="text-slate-700 whitespace-nowrap">
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <span
+                      className={`text-[11px] ${
+                        isStaged ? 'font-medium text-teal-700' : 'text-slate-500'
+                      }`}
+                      title={
+                        isStaged
+                          ? 'Loaded from an uploaded expense CSV and pending sync to Expense_Ledger'
+                          : 'Already saved in the Expense_Ledger Google Sheet'
+                      }
+                    >
+                      {isStaged ? 'Uploaded (rdy2sync)' : 'In Sheet'}
+                    </span>
+                  </td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <div className="font-mono text-[12px] text-slate-800 tabular-nums">
+                      {rec.date}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-slate-500 tabular-nums">
+                      {rec.expId}
+                    </div>
+                  </td>
+                  <td className="max-w-[165px] px-2 py-2">
+                    <div className="truncate font-medium text-slate-800" title={rec.category}>
+                      {rec.category || '—'}
+                    </div>
+                    {rec.subCategory && (
+                      <div
+                        className="mt-0.5 truncate text-[11px] text-slate-500"
+                        title={rec.subCategory}
+                      >
+                        {rec.subCategory}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-2 py-2 text-right whitespace-nowrap">
+                    <div className="font-mono text-[12px] font-medium text-red-700 tabular-nums">
+                      {rec.amount.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}
+                    </div>
+                    <div
+                      className="mt-0.5 text-[11px] text-slate-500"
+                      title={rec.paymentMode ? `Payment Mode: ${rec.paymentMode}` : undefined}
+                    >
+                      {rec.paymentMode || '—'}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <span className={`font-medium ${statusColor}`}>{rec.status || '—'}</span>
+                  </td>
+                  <td className="max-w-[260px] px-2 py-2">
+                    <div className="truncate text-slate-800" title={rec.description}>
+                      {rec.description || '—'}
+                    </div>
+                    {(rec.puja || rec.sourceFileName) && (
+                      <div className="mt-0.5 truncate text-[11px] text-slate-500">
+                        {rec.puja && (
+                          <span className="font-medium text-slate-600" title={`Puja: ${rec.puja}`}>
+                            [{rec.puja}]
+                          </span>
+                        )}
+                        {rec.sourceFileName && (
+                          <span className="text-slate-400" title={rec.sourceFileName}>
+                            {rec.puja ? ' · ' : ''}
+                            {rec.sourceFileName}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="max-w-[140px] py-2 pl-2 pr-3">
+                    <div className="truncate text-slate-700" title={rec.reconSource}>
                       {rec.reconSource || '—'}
                     </div>
                     {rec.reconSourceId && (
-                      <div className="mt-0.5 font-mono text-[11px] text-slate-500 whitespace-nowrap tabular-nums">
+                      <div
+                        className="mt-0.5 truncate font-mono text-[11px] text-slate-500 tabular-nums"
+                        title={rec.reconSourceId}
+                      >
                         {rec.reconSourceId}
                       </div>
                     )}
@@ -310,12 +352,18 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
         </table>
       </div>
 
-      <div className="border-t border-slate-200 bg-slate-50/70 px-4 py-2 text-xs text-slate-500">
-        <span className="font-mono tabular-nums">
-          Showing all {records.length.toLocaleString()}{' '}
-          {records.length === 1 ? 'expense record' : 'expense records'}
-        </span>
-      </div>
+      <TablePagination
+        totalItems={records.length}
+        pageSize={pageSize}
+        currentPage={safePage}
+        singularLabel="expense record"
+        pluralLabel="expense records"
+        onPageChange={setCurrentPage}
+        onPageSizeChange={(newSize) => {
+          setPageSize(newSize);
+          setCurrentPage(1);
+        }}
+      />
     </div>
   );
 };

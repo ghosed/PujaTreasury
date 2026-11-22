@@ -1388,8 +1388,8 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       </aside>
 
       {/* Main Content */}
-      <main className="min-w-0 flex-1 p-6">
-        <div className="mx-auto max-w-[1440px] space-y-5">
+      <main className="min-w-0 flex-1 p-5">
+        <div className="mx-auto max-w-[1560px] space-y-5">
           {/* Header Row */}
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-[240px] flex-1">
@@ -1607,7 +1607,47 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
           </div>
 
           {/* Filter Bar */}
-          <div className="rounded-lg border border-slate-200 bg-white p-3.5">
+          <div className="space-y-2.5 rounded-lg border border-slate-200 bg-white p-3.5">
+            {/* Row 1: Month & Date Range */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <select
+                value={activeMonthPreset}
+                onChange={(e) => handleSelectMonth(e.target.value)}
+                aria-label="Quick select month"
+                title="Quick-select a calendar month"
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+              >
+                <option value="">All Months</option>
+                {monthOptions.map((ym) => (
+                  <option key={ym} value={ym}>
+                    {ym}
+                  </option>
+                ))}
+              </select>
+
+              <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                <Calendar className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  aria-label="Start Date"
+                  title="Filter checks from this date"
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                />
+                <span>to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  aria-label="End Date"
+                  title="Filter checks through this date"
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Row 2: Origin Tabs + Search */}
             <div className="flex flex-wrap items-center gap-3">
               {/* Origin Tabs */}
               <div className="inline-flex rounded-md bg-slate-100 p-1 text-xs font-medium">
@@ -1651,12 +1691,29 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
                 />
               </div>
+            </div>
+
+            {/* Row 3: Dropdown Filters */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              {/* Is_Recon Filter */}
+              <select
+                value={reconFilter}
+                onChange={(e) => setReconFilter(e.target.value as ReconFilter)}
+                aria-label="Filter by Is_Recon"
+                title="Filter checks by reconciliation status"
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+              >
+                <option value="all">All Is_Recon</option>
+                <option value="unrecon">Unreconciled (No)</option>
+                <option value="recon">Reconciled (Yes)</option>
+              </select>
 
               {/* Transaction Type Filter */}
               <select
                 value={typeFilter}
                 onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
                 aria-label="Filter by Transaction Type"
+                title="Filter checks by Income or Expense"
                 className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
               >
                 <option value="all">All Types</option>
@@ -1669,6 +1726,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 value={categoryFilter}
                 onChange={(e) => setCategoryFilter(e.target.value)}
                 aria-label="Filter by Category"
+                title="Filter checks by category"
                 className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
               >
                 <option value="all">All Categories</option>
@@ -1678,53 +1736,6 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   </option>
                 ))}
               </select>
-
-              {/* Is_Recon Filter */}
-              <select
-                value={reconFilter}
-                onChange={(e) => setReconFilter(e.target.value as ReconFilter)}
-                aria-label="Filter by Is_Recon"
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-              >
-                <option value="all">All Is_Recon</option>
-                <option value="unrecon">Unreconciled (No)</option>
-                <option value="recon">Reconciled (Yes)</option>
-              </select>
-
-              {/* Month Quick Picker */}
-              <select
-                value={activeMonthPreset}
-                onChange={(e) => handleSelectMonth(e.target.value)}
-                aria-label="Quick select month"
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-              >
-                <option value="">All Months</option>
-                {monthOptions.map((ym) => (
-                  <option key={ym} value={ym}>
-                    {ym}
-                  </option>
-                ))}
-              </select>
-
-              {/* Date Range */}
-              <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                <Calendar className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  aria-label="Start Date"
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-                />
-                <span>to</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  aria-label="End Date"
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-                />
-              </div>
 
               {(originFilter !== 'all' ||
                 typeFilter !== 'all' ||

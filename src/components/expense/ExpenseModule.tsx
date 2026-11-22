@@ -1148,8 +1148,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       </aside>
 
       {/* Main Expense Ledger Viewport */}
-      <main className="min-w-0 flex-1 p-6">
-        <div className="mx-auto max-w-[1200px] space-y-5">
+      <main className="min-w-0 flex-1 p-5">
+        <div className="mx-auto max-w-[1560px] space-y-5">
           {/* Header Row */}
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -1423,7 +1423,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                           {item.count === 1 ? 'item' : 'items'}
                         </span>
                       </div>
-                      <div className="mt-1.5 font-mono text-base font-semibold text-slate-900 tabular-nums">
+                      <div className="mt-1.5 font-mono text-base font-semibold text-red-700 tabular-nums">
                         {item.total.toLocaleString('en-US', {
                           style: 'currency',
                           currency: 'USD',
@@ -1527,10 +1527,6 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     const isSelected =
                       linkFilter === 'unrecon' &&
                       categoryFilter.toLowerCase() === item.category.toLowerCase();
-                    const sharePct =
-                      unreconCategorySummary.totalAmount > 0
-                        ? (item.total / unreconCategorySummary.totalAmount) * 100
-                        : 0;
 
                     return (
                       <button
@@ -1546,7 +1542,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                           }
                         }}
                         aria-pressed={isSelected}
-                        className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
+                        className={`rounded-lg border px-4 py-3 text-left transition-colors ${
                           isSelected
                             ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
                             : 'border-slate-200 bg-white hover:border-slate-300'
@@ -1561,17 +1557,11 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                             {item.count === 1 ? 'item' : 'items'}
                           </span>
                         </div>
-
-                        <div className="mt-2 font-mono text-base font-semibold tracking-tight text-red-700 tabular-nums">
+                        <div className="mt-1.5 font-mono text-base font-semibold text-red-700 tabular-nums">
                           {item.total.toLocaleString('en-US', {
                             style: 'currency',
                             currency: 'USD',
                           })}
-                        </div>
-
-                        <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] text-slate-500 tabular-nums">
-                          <span>{sharePct.toFixed(1)}% of unrecon</span>
-                          <span>Is_Recon = No</span>
                         </div>
                       </button>
                     );
@@ -1701,32 +1691,33 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
 
           {/* Expense Ledger Table Surface */}
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
-                {(
-                  [
-                    { id: 'all', label: `All (${allRecords.length})` },
-                    { id: 'sheet', label: `In Sheet (${sheetRecords.length})` },
-                    { id: 'staged', label: `Staged CSV (${effectiveStagedRecords.length})` },
-                  ] as Array<{ id: OriginFilter; label: string }>
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setOriginFilter(tab.id)}
-                    className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
-                      originFilter === tab.id
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
+            <div className="space-y-2.5 border-b border-slate-200 px-4 py-3">
+              {/* Row 1: Origin tabs + Search */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
+                  {(
+                    [
+                      { id: 'all', label: `All (${allRecords.length})` },
+                      { id: 'sheet', label: `In Sheet (${sheetRecords.length})` },
+                      { id: 'staged', label: `Staged CSV (${effectiveStagedRecords.length})` },
+                    ] as Array<{ id: OriginFilter; label: string }>
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setOriginFilter(tab.id)}
+                      className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
+                        originFilter === tab.id
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
+                <div className="relative min-w-[220px] flex-1 max-w-sm">
                   <Search
                     className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
                     aria-hidden="true"
@@ -1736,10 +1727,13 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search Exp_ID, description..."
-                    className="w-52 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                    className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                   />
                 </div>
+              </div>
 
+              {/* Row 2: Attribute filter dropdowns */}
+              <div className="flex flex-wrap items-center gap-2">
                 <select
                   value={linkFilter}
                   onChange={(e) => setLinkFilter(e.target.value as ExpenseLinkFilter)}

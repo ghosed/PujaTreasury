@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, FileUp, Pencil, Plus } from 'lucide-react';
 import { CheckRecord } from '../../types/check';
 import { isValid12CharUniqueId } from '../../utils/checkProcessor';
 import { GoogleSignInButton } from '../GoogleSignInButton';
+import { TablePagination } from '../TablePagination';
 
 export type CheckSortField = 'date' | 'checkNumber';
 
@@ -49,6 +50,23 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
   onOpenManualEntry,
   onResetFilters,
 }) => {
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const paginatedRecords = useMemo(() => {
+    const startIdx = (safePage - 1) * pageSize;
+    return records.slice(startIdx, startIdx + pageSize);
+  }, [records, safePage, pageSize]);
+
   if (isLoading) {
     return (
       <div className="divide-y divide-slate-100">
@@ -166,21 +184,20 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
         <table className="w-full border-collapse text-left text-xs">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-              <th className="px-4 py-2.5 font-medium whitespace-nowrap">State / Edit</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Is_Recon</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+              <th className="py-2 pl-3 pr-2 font-medium whitespace-nowrap">Action</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">State</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">
                 <button
                   type="button"
                   onClick={() => onToggleSort('date')}
                   className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-slate-900"
                   title="Sort by Check Date"
                 >
-                  <span>Date</span>
+                  <span>Date / Unique ID</span>
                   {renderSortIcon('date')}
                 </button>
               </th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Unique ID</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+              <th className="px-2 py-2 font-medium whitespace-nowrap">
                 <button
                   type="button"
                   onClick={() => onToggleSort('checkNumber')}
@@ -191,18 +208,15 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
                   {renderSortIcon('checkNumber')}
                 </button>
               </th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Routing #</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Bank</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Transaction Type</th>
-              <th className="px-3 py-2.5 text-right font-medium whitespace-nowrap">Amount</th>
-              <th className="px-3 py-2.5 font-medium">Paid To</th>
-              <th className="px-3 py-2.5 font-medium">Paid By</th>
-              <th className="px-3 py-2.5 font-medium whitespace-nowrap">Category</th>
-              <th className="px-4 py-2.5 font-medium">Memo / For</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">Bank / Routing</th>
+              <th className="px-2 py-2 text-right font-medium whitespace-nowrap">Amount</th>
+              <th className="px-2 py-2 font-medium">Paid To / Paid By</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">Category</th>
+              <th className="py-2 pl-2 pr-3 font-medium">Memo / For</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {records.map((rec) => {
+            {paginatedRecords.map((rec) => {
               const isScanned = rec.sourceOrigin === 'scan';
               const isDup = Boolean(rec.isDuplicate);
               const isLegacyId = !isValid12CharUniqueId(rec.uniqueId);
@@ -218,124 +232,130 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
                         : 'hover:bg-slate-50/80'
                   }`}
                 >
-                  <td className="px-4 py-2.5 whitespace-nowrap">
-                    <div className="inline-flex items-center gap-2.5">
-                      <button
-                        type="button"
-                        onClick={() => onEditRecord(rec)}
-                        disabled={isDup}
-                        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 hover:text-teal-800 disabled:cursor-not-allowed disabled:opacity-40"
-                        title={
-                          isDup
-                            ? rec.duplicateReason || 'Duplicate check copy'
-                            : `Edit ${rec.uniqueId}`
-                        }
-                      >
-                        <Pencil className="h-3 w-3" aria-hidden="true" />
-                        Edit
-                      </button>
-                      <span
-                        className={`text-[11px] ${
-                          isDup
-                            ? 'font-medium text-amber-800'
-                            : isScanned
-                              ? 'font-medium text-teal-700'
-                              : 'text-slate-500'
-                        }`}
-                        title={rec.duplicateReason}
-                      >
-                        {isDup
-                          ? 'Duplicate Skipped'
-                          : isScanned
-                            ? 'Scanned (Ready)'
-                            : 'In Sheet'}
-                      </span>
+                  <td className="py-2 pl-3 pr-2 whitespace-nowrap">
+                    <div className="space-y-1">
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => onEditRecord(rec)}
+                          disabled={isDup}
+                          aria-label={`Edit ${rec.uniqueId}`}
+                          title={
+                            isDup
+                              ? rec.duplicateReason || 'Duplicate check copy'
+                              : `Edit ${rec.uniqueId}`
+                          }
+                          className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 hover:text-teal-800 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Pencil className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                      </div>
+                      <div>
+                        <select
+                          value={rec.isRecon === 'Yes' ? 'Yes' : 'No'}
+                          onChange={(e) =>
+                            onUpdateIsRecon(rec, e.target.value === 'Yes' ? 'Yes' : 'No')
+                          }
+                          disabled={isDup || updatingReconKey === rec.rowKey}
+                          aria-label={`Is_Recon for ${rec.uniqueId}`}
+                          className={`rounded border bg-white px-1.5 py-0.5 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                            rec.isRecon === 'Yes'
+                              ? 'border-emerald-300 text-emerald-800'
+                              : 'border-slate-300 text-slate-700'
+                          }`}
+                        >
+                          <option value="No">No</option>
+                          <option value="Yes">Yes</option>
+                        </select>
+                      </div>
                     </div>
                   </td>
 
-                  <td className="px-3 py-2.5 whitespace-nowrap">
-                    <select
-                      value={rec.isRecon === 'Yes' ? 'Yes' : 'No'}
-                      onChange={(e) =>
-                        onUpdateIsRecon(rec, e.target.value === 'Yes' ? 'Yes' : 'No')
-                      }
-                      disabled={isDup || updatingReconKey === rec.rowKey}
-                      aria-label={`Is_Recon for ${rec.uniqueId}`}
-                      className={`rounded border bg-white px-2 py-1 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-                        rec.isRecon === 'Yes'
-                          ? 'border-emerald-300 text-emerald-800'
-                          : 'border-slate-300 text-slate-700'
-                      }`}
-                    >
-                      <option value="No">No</option>
-                      <option value="Yes">Yes</option>
-                    </select>
-                  </td>
-
-                  <td className="px-3 py-2.5 font-mono text-[12px] whitespace-nowrap tabular-nums">
-                    {rec.date || '—'}
-                  </td>
-
-                  <td
-                    className={`max-w-[160px] truncate px-3 py-2.5 font-mono text-[11px] tabular-nums ${
-                      isLegacyId ? 'text-amber-700' : 'text-slate-700'
-                    }`}
-                    title={
-                      isLegacyId
-                        ? `${rec.uniqueId} (Legacy ID — use Replace Legacy Unique IDs to upgrade to 12-char hash)`
-                        : rec.uniqueId
-                    }
-                  >
-                    {rec.uniqueId}
-                  </td>
-
-                  <td className="px-3 py-2.5 font-mono text-[12px] text-slate-800 whitespace-nowrap tabular-nums">
-                    {rec.checkNumber || '—'}
-                  </td>
-
-                  <td className="px-3 py-2.5 font-mono text-[11px] text-slate-600 whitespace-nowrap tabular-nums">
-                    {rec.routingNumber || '—'}
-                  </td>
-
-                  <td className="max-w-[160px] truncate px-3 py-2.5 text-slate-700" title={rec.bank}>
-                    {rec.bank || '—'}
-                  </td>
-
-                  <td className="px-3 py-2.5 whitespace-nowrap">
+                  <td className="px-2 py-2 whitespace-nowrap">
                     <span
-                      className={`font-medium ${
-                        rec.transactionType === 'Income'
-                          ? 'text-emerald-700'
-                          : 'text-red-700'
+                      className={`text-[11px] ${
+                        isDup
+                          ? 'font-medium text-amber-800'
+                          : isScanned
+                            ? 'font-medium text-teal-700'
+                            : 'text-slate-500'
                       }`}
+                      title={
+                        isDup
+                          ? rec.duplicateReason ||
+                            'Detected as a duplicate check copy and skipped from recording'
+                          : isScanned
+                            ? 'Newly extracted from an uploaded check image/PDF and ready to record to Check_Ledger'
+                            : 'Already saved in the Check_Ledger Google Sheet'
+                      }
                     >
-                      {rec.transactionType}
+                      {isDup
+                        ? 'Duplicate'
+                        : isScanned
+                          ? 'Scanned (rdy2sync)'
+                          : 'In Sheet'}
                     </span>
                   </td>
 
-                  <td className="px-3 py-2.5 text-right font-mono text-[12px] font-medium text-slate-900 whitespace-nowrap tabular-nums">
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <div className="font-mono text-[12px] text-slate-800 tabular-nums">
+                      {rec.date || '—'}
+                    </div>
+                    <div
+                      className={`mt-0.5 max-w-[125px] truncate font-mono text-[11px] tabular-nums ${
+                        isLegacyId ? 'text-amber-700' : 'text-slate-500'
+                      }`}
+                      title={
+                        isLegacyId
+                          ? `${rec.uniqueId} (Legacy ID — use Replace Legacy Unique IDs to upgrade to 12-char hash)`
+                          : rec.uniqueId
+                      }
+                    >
+                      {rec.uniqueId}
+                    </div>
+                  </td>
+
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <div className="font-mono text-[12px] font-medium text-slate-800 tabular-nums">
+                      {rec.checkNumber || '—'}
+                    </div>
+                  </td>
+
+                  <td className="max-w-[135px] px-2 py-2">
+                    <div className="truncate text-slate-700" title={rec.bank}>
+                      {rec.bank || '—'}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-slate-500 tabular-nums">
+                      {rec.routingNumber || '—'}
+                    </div>
+                  </td>
+
+                  <td
+                    className={`px-2 py-2 text-right font-mono text-[12px] font-medium whitespace-nowrap tabular-nums ${
+                      rec.transactionType === 'Income' ? 'text-emerald-800' : 'text-red-700'
+                    }`}
+                  >
                     {rec.amount.toLocaleString('en-US', {
                       style: 'currency',
                       currency: 'USD',
                     })}
                   </td>
 
-                  <td className="max-w-[180px] truncate px-3 py-2.5 text-slate-800" title={rec.paidTo}>
-                    {rec.paidTo || '—'}
-                  </td>
-
-                  <td className="max-w-[190px] px-3 py-2.5">
-                    <div className="truncate text-slate-800" title={rec.paidBy}>
+                  <td className="max-w-[205px] px-2 py-2">
+                    <div className="truncate text-slate-800" title={`Paid To: ${rec.paidTo || '—'}`}>
+                      <span className="text-[11px] text-slate-400">To: </span>
+                      {rec.paidTo || '—'}
+                    </div>
+                    <div
+                      className="mt-0.5 truncate text-[11px] text-slate-600"
+                      title={`Paid By: ${rec.paidBy || '—'}${rec.sourceFileName ? ` (${rec.sourceFileName})` : ''}`}
+                    >
+                      <span className="text-slate-400">By: </span>
                       {rec.paidBy || '—'}
                     </div>
-                    {rec.sourceFileName && (
-                      <div className="mt-0.5 truncate text-[11px] text-slate-400">
-                        {rec.sourceFileName}
-                      </div>
-                    )}
                   </td>
 
-                  <td className="px-3 py-2.5 whitespace-nowrap">
+                  <td className="px-2 py-2 whitespace-nowrap">
                     {(() => {
                       const currentCat = (rec.category ?? '').trim();
                       const typeOptions =
@@ -355,7 +375,7 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
                           onChange={(e) => onUpdateCategory(rec, e.target.value)}
                           disabled={isDup || updatingCategoryKey === rec.rowKey}
                           aria-label={`Category for ${rec.uniqueId}`}
-                          className="max-w-[170px] rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                          className="w-[140px] rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <option value="">—</option>
                           {rowCatOptions.map((cat) => (
@@ -368,7 +388,10 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
                     })()}
                   </td>
 
-                  <td className="max-w-[220px] truncate px-4 py-2.5 text-slate-600" title={rec.memo}>
+                  <td
+                    className="max-w-[175px] truncate py-2 pl-2 pr-3 text-slate-600"
+                    title={rec.memo || undefined}
+                  >
                     {rec.memo || '—'}
                   </td>
                 </tr>
@@ -378,12 +401,18 @@ export const CheckGrid: React.FC<CheckGridProps> = ({
         </table>
       </div>
 
-      <div className="border-t border-slate-200 bg-slate-50/70 px-4 py-2 text-xs text-slate-500">
-        <span className="font-mono tabular-nums">
-          Showing {records.length.toLocaleString()}{' '}
-          {records.length === 1 ? 'check record' : 'check records'}
-        </span>
-      </div>
+      <TablePagination
+        totalItems={records.length}
+        pageSize={pageSize}
+        currentPage={safePage}
+        singularLabel="check record"
+        pluralLabel="check records"
+        onPageChange={setCurrentPage}
+        onPageSizeChange={(newSize) => {
+          setPageSize(newSize);
+          setCurrentPage(1);
+        }}
+      />
     </div>
   );
 };

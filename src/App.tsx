@@ -750,7 +750,7 @@ export default function App() {
 
   const handleUpdateBankInlineField = async (
     tx: NormalizedTransaction,
-    patch: { category?: string }
+    patch: { category?: string; isRecon?: 'Yes' | 'No' }
   ) => {
     if (!tx.sheetRowNumber) {
       setBankFieldOverrides((prev) => ({
@@ -780,6 +780,7 @@ export default function App() {
           ? {
               ...row,
               category: patch.category ?? row.category,
+              isRecon: patch.isRecon ?? row.isRecon,
             }
           : row
       ),
@@ -1541,6 +1542,7 @@ export default function App() {
     const unreconTransactions: NormalizedTransaction[] = [];
     let totalCount = 0;
     let totalCents = 0;
+    let totalAllExpenseCents = 0;
 
     for (const tx of transactions) {
       if (statusFilter === 'ready') {
@@ -1558,7 +1560,6 @@ export default function App() {
 
       if (typeFilter !== 'all' && tx.transactionType !== typeFilter) continue;
       if (tx.transactionType !== 'Expense') continue;
-      if ((tx.isRecon ?? 'No') === 'Yes') continue;
       if (startDate && tx.date < startDate) continue;
       if (endDate && tx.date > endDate) continue;
       if (q) {
@@ -1568,6 +1569,10 @@ export default function App() {
       }
 
       const absCents = Math.abs(tx.amountCents);
+      totalAllExpenseCents += absCents;
+
+      if ((tx.isRecon ?? 'No') === 'Yes') continue;
+
       const entry = bySource.get(tx.source) ?? {
         source: tx.source,
         count: 0,
@@ -1604,6 +1609,7 @@ export default function App() {
       transactions: unreconTransactions,
       totalCount,
       totalAmount: totalCents / 100,
+      totalAllExpenseAmount: totalAllExpenseCents / 100,
       activeSourceCount: bySource.size,
     };
   }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
@@ -1614,6 +1620,7 @@ export default function App() {
     const unreconTransactions: NormalizedTransaction[] = [];
     let totalCount = 0;
     let totalCents = 0;
+    let totalAllIncomeCents = 0;
 
     for (const tx of transactions) {
       if (statusFilter === 'ready') {
@@ -1631,7 +1638,6 @@ export default function App() {
 
       if (typeFilter !== 'all' && tx.transactionType !== typeFilter) continue;
       if (tx.transactionType !== 'Income') continue;
-      if ((tx.isRecon ?? 'No') === 'Yes') continue;
       if (startDate && tx.date < startDate) continue;
       if (endDate && tx.date > endDate) continue;
       if (q) {
@@ -1639,6 +1645,10 @@ export default function App() {
           `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
         if (!hay.includes(q)) continue;
       }
+
+      totalAllIncomeCents += tx.amountCents;
+
+      if ((tx.isRecon ?? 'No') === 'Yes') continue;
 
       const absCents = Math.abs(tx.amountCents);
       const entry = bySource.get(tx.source) ?? {
@@ -1677,6 +1687,7 @@ export default function App() {
       transactions: unreconTransactions,
       totalCount,
       totalAmount: totalCents / 100,
+      totalAllIncomeAmount: totalAllIncomeCents / 100,
       activeSourceCount: bySource.size,
     };
   }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
@@ -2079,8 +2090,8 @@ export default function App() {
         </aside>
 
         {/* Main Ledger Viewport */}
-        <main className="min-w-0 flex-1 p-6">
-          <div className="mx-auto max-w-[1200px] space-y-5">
+        <main className="min-w-0 flex-1 p-5">
+          <div className="mx-auto max-w-[1560px] space-y-5">
             {/* Page Title + Context */}
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
@@ -2475,10 +2486,18 @@ export default function App() {
                     <span aria-hidden="true" className="text-slate-300">
                       ·
                     </span>
-                    <span className="font-mono text-slate-700 tabular-nums">
+                    <span
+                      className="font-mono text-slate-700 tabular-nums"
+                      title="Unreconciled Expense / Total Expense"
+                    >
                       {unreconExpenseSummary.totalCount.toLocaleString()}{' '}
                       {unreconExpenseSummary.totalCount === 1 ? 'txn' : 'txns'} ·{' '}
                       {unreconExpenseSummary.totalAmount.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}{' '}
+                      /{' '}
+                      {unreconExpenseSummary.totalAllExpenseAmount.toLocaleString('en-US', {
                         style: 'currency',
                         currency: 'USD',
                       })}
@@ -2636,10 +2655,18 @@ export default function App() {
                     <span aria-hidden="true" className="text-slate-300">
                       ·
                     </span>
-                    <span className="font-mono text-slate-700 tabular-nums">
+                    <span
+                      className="font-mono text-slate-700 tabular-nums"
+                      title="Unreconciled Income / Total Income"
+                    >
                       {unreconIncomeSummary.totalCount.toLocaleString()}{' '}
                       {unreconIncomeSummary.totalCount === 1 ? 'txn' : 'txns'} ·{' '}
                       {unreconIncomeSummary.totalAmount.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}{' '}
+                      /{' '}
+                      {unreconIncomeSummary.totalAllIncomeAmount.toLocaleString('en-US', {
                         style: 'currency',
                         currency: 'USD',
                       })}

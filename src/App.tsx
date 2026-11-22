@@ -82,6 +82,7 @@ type TypeFilter = 'all' | 'Income' | 'Expense';
 type LinkFilter =
   | 'all'
   | 'unrecon-expenses'
+  | 'unrecon-income'
   | 'recon-expenses'
   | 'unlinked-expenses'
   | 'linked-expenses';
@@ -525,7 +526,7 @@ export default function App() {
           ? resolveCheckLedgerDescription(tx, checkLedgerRecords)
           : null;
       const nextDescription = ov?.description ?? matchedCheckDesc ?? tx.description;
-      const autoNote = matchedCheckDesc ? extractNotes(matchedCheckDesc) : '';
+      const autoNote = matchedCheckDesc ? extractNotes(matchedCheckDesc, tx.source) : '';
       const nextNotes = ov?.notes ?? (tx.notes || autoNote || '');
 
       if (!ov && !matchedCheckDesc) return tx;
@@ -1198,6 +1199,18 @@ export default function App() {
     exportTransactionsCsv(sorted, `${account.toLowerCase()}-unrecon-expenses.csv`);
   };
 
+  const handleExportUnreconIncomeCsv = () => {
+    const sorted = [...unreconIncomeSummary.transactions].sort((a, b) => {
+      const cmp =
+        dateSortOrder === 'desc'
+          ? b.date.localeCompare(a.date)
+          : a.date.localeCompare(b.date);
+      if (cmp !== 0) return cmp;
+      return a.occurrenceIndex - b.occurrenceIndex;
+    });
+    exportTransactionsCsv(sorted, `${account.toLowerCase()}-unrecon-income.csv`);
+  };
+
   const availableSources = useMemo(() => {
     const set = new Set<string>();
     for (const tx of transactions) {
@@ -1315,6 +1328,10 @@ export default function App() {
       }
       if (linkFilter === 'unrecon-expenses') {
         if (tx.transactionType !== 'Expense' || (tx.isRecon ?? 'No') === 'Yes') {
+          return false;
+        }
+      } else if (linkFilter === 'unrecon-income') {
+        if (tx.transactionType !== 'Income' || (tx.isRecon ?? 'No') === 'Yes') {
           return false;
         }
       } else if (linkFilter === 'recon-expenses') {
@@ -1531,23 +1548,102 @@ export default function App() {
       totalCents += absCents;
     }
 
-    const items = Array.from(bySource.values())
-      .map((item) => ({
+    const summaryMap = new Map<string, { source: string; count: number; total: number }>();
+    const extras: string[] = [];
+
+    for (const item of bySource.values()) {
+      summaryMap.set(item.source, {
         source: item.source,
         count: item.count,
         total: item.totalCents / 100,
-      }))
-      .sort((a, b) => {
-        if (b.total !== a.total) return b.total - a.total;
-        return a.source.localeCompare(b.source);
       });
+      if (!CONFIGURED_SOURCE_SET.has(item.source)) {
+        extras.push(item.source);
+      }
+    }
+
+    extras.sort((a, b) => a.localeCompare(b));
 
     return {
-      items,
+      bySourceMap: summaryMap,
+      extraSources: extras,
       transactions: unreconTransactions,
       totalCount,
       totalAmount: totalCents / 100,
-      activeSourceCount: items.length,
+      activeSourceCount: bySource.size,
+    };
+  }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
+
+  const unreconIncomeSummary = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const bySource = new Map<string, { source: string; count: number; totalCents: number }>();
+    const unreconTransactions: NormalizedTransaction[] = [];
+    let totalCount = 0;
+    let totalCents = 0;
+
+    for (const tx of transactions) {
+      if (statusFilter === 'ready') {
+        const eligible = tx.reviewStatus === 'ok' || tx.reviewStatus === 'kept-distinct';
+        if (!eligible || tx.syncStatus !== 'pending') continue;
+      } else if (statusFilter === 'review') {
+        if (tx.reviewStatus !== 'flagged-duplicate') continue;
+      } else if (statusFilter === 'discarded') {
+        if (tx.reviewStatus !== 'discarded') continue;
+      } else if (statusFilter === 'in-sheet') {
+        if (tx.syncStatus === 'pending') continue;
+      } else if (tx.reviewStatus === 'discarded') {
+        continue;
+      }
+
+      if (typeFilter !== 'all' && tx.transactionType !== typeFilter) continue;
+      if (tx.transactionType !== 'Income') continue;
+      if ((tx.isRecon ?? 'No') === 'Yes') continue;
+      if (startDate && tx.date < startDate) continue;
+      if (endDate && tx.date > endDate) continue;
+      if (q) {
+        const hay =
+          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+
+      const absCents = Math.abs(tx.amountCents);
+      const entry = bySource.get(tx.source) ?? {
+        source: tx.source,
+        count: 0,
+        totalCents: 0,
+      };
+      entry.count++;
+      entry.totalCents += absCents;
+      bySource.set(tx.source, entry);
+
+      unreconTransactions.push(tx);
+      totalCount++;
+      totalCents += absCents;
+    }
+
+    const summaryMap = new Map<string, { source: string; count: number; total: number }>();
+    const extras: string[] = [];
+
+    for (const item of bySource.values()) {
+      summaryMap.set(item.source, {
+        source: item.source,
+        count: item.count,
+        total: item.totalCents / 100,
+      });
+      if (!CONFIGURED_SOURCE_SET.has(item.source)) {
+        extras.push(item.source);
+      }
+    }
+
+    extras.sort((a, b) => a.localeCompare(b));
+
+    return {
+      bySourceMap: summaryMap,
+      extraSources: extras,
+      transactions: unreconTransactions,
+      totalCount,
+      totalAmount: totalCents / 100,
+      activeSourceCount: bySource.size,
     };
   }, [transactions, statusFilter, typeFilter, startDate, endDate, searchQuery]);
 
@@ -2177,14 +2273,14 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {(extraSources.length > 0
                     ? [...SOURCE_CARD_ROWS, extraSources]
                     : SOURCE_CARD_ROWS
                   ).map((rowSources, rowIndex) => (
                     <div
                       key={rowIndex}
-                      className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+                      className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
                     >
                       {rowSources.map((sourceName) => {
                         const item = sourceSummaryMap.get(sourceName) ?? {
@@ -2195,7 +2291,9 @@ export default function App() {
                           net: 0,
                         };
                         const isSelected =
-                          sourceFilter === sourceName && linkFilter !== 'unrecon-expenses';
+                          sourceFilter === sourceName &&
+                          linkFilter !== 'unrecon-expenses' &&
+                          linkFilter !== 'unrecon-income';
                         const isEmpty = item.count === 0;
 
                         return (
@@ -2203,17 +2301,24 @@ export default function App() {
                             key={`${rowIndex}-${sourceName}`}
                             type="button"
                             onClick={() => {
-                              if (sourceFilter === sourceName && linkFilter !== 'unrecon-expenses') {
+                              if (
+                                sourceFilter === sourceName &&
+                                linkFilter !== 'unrecon-expenses' &&
+                                linkFilter !== 'unrecon-income'
+                              ) {
                                 setSourceFilter('all');
                               } else {
                                 setSourceFilter(sourceName);
-                                if (linkFilter === 'unrecon-expenses') {
+                                if (
+                                  linkFilter === 'unrecon-expenses' ||
+                                  linkFilter === 'unrecon-income'
+                                ) {
                                   setLinkFilter('all');
                                 }
                               }
                             }}
                             aria-pressed={isSelected}
-                            className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
+                            className={`rounded-lg border px-3.5 py-2.5 text-left transition-colors ${
                               isSelected
                                 ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
                                 : isEmpty
@@ -2221,34 +2326,38 @@ export default function App() {
                                   : 'border-slate-200 bg-white hover:border-slate-300'
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-xs font-semibold text-slate-900">
-                                {item.source}
-                              </span>
-                              <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
-                                {item.count.toLocaleString()}{' '}
-                                {item.count === 1 ? 'txn' : 'txns'}
+                            <div className="flex items-baseline justify-between gap-2">
+                              <div className="flex min-w-0 items-baseline gap-1.5">
+                                <span
+                                  className="truncate text-xs font-semibold text-slate-900"
+                                  title={item.source}
+                                >
+                                  {item.source}
+                                </span>
+                                <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
+                                  {item.count.toLocaleString()}{' '}
+                                  {item.count === 1 ? 'txn' : 'txns'}
+                                </span>
+                              </div>
+                              <span
+                                className={`shrink-0 font-mono text-sm font-semibold tracking-tight tabular-nums ${
+                                  isEmpty
+                                    ? 'text-slate-400'
+                                    : item.net > 0
+                                      ? 'text-emerald-700'
+                                      : item.net < 0
+                                        ? 'text-red-700'
+                                        : 'text-slate-900'
+                                }`}
+                              >
+                                {item.net.toLocaleString('en-US', {
+                                  style: 'currency',
+                                  currency: 'USD',
+                                })}
                               </span>
                             </div>
 
-                            <div
-                              className={`mt-2 font-mono text-base font-semibold tracking-tight tabular-nums ${
-                                isEmpty
-                                  ? 'text-slate-400'
-                                  : item.net > 0
-                                    ? 'text-emerald-700'
-                                    : item.net < 0
-                                      ? 'text-red-700'
-                                      : 'text-slate-900'
-                              }`}
-                            >
-                              {item.net.toLocaleString('en-US', {
-                                style: 'currency',
-                                currency: 'USD',
-                              })}
-                            </div>
-
-                            <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] tabular-nums">
+                            <div className="mt-1.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-1.5 font-mono text-[11px] tabular-nums">
                               <span
                                 className={isEmpty ? 'text-slate-400' : 'text-emerald-700'}
                               >
@@ -2356,64 +2465,243 @@ export default function App() {
                   </div>
                 </div>
 
-                {unreconExpenseSummary.items.length === 0 ? (
+                {unreconExpenseSummary.totalCount === 0 ? (
                   <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
                     All expense transactions in this view have Is_Recon = &ldquo;Yes&rdquo;.
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    {unreconExpenseSummary.items.map((item) => {
-                      const isSelected =
-                        linkFilter === 'unrecon-expenses' && sourceFilter === item.source;
-                      const sharePct =
-                        unreconExpenseSummary.totalAmount > 0
-                          ? (item.total / unreconExpenseSummary.totalAmount) * 100
-                          : 0;
+                  <div className="space-y-2.5">
+                    {(unreconExpenseSummary.extraSources.length > 0
+                      ? [...SOURCE_CARD_ROWS, unreconExpenseSummary.extraSources]
+                      : SOURCE_CARD_ROWS
+                    ).map((rowSources, rowIndex) => (
+                      <div
+                        key={rowIndex}
+                        className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
+                      >
+                        {rowSources.map((sourceName) => {
+                          const item = unreconExpenseSummary.bySourceMap.get(sourceName) ?? {
+                            source: sourceName,
+                            count: 0,
+                            total: 0,
+                          };
+                          const isSelected =
+                            linkFilter === 'unrecon-expenses' && sourceFilter === sourceName;
+                          const isEmpty = item.count === 0;
 
-                      return (
+                          return (
+                            <button
+                              key={`unrecon-${rowIndex}-${sourceName}`}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  setLinkFilter('all');
+                                  setSourceFilter('all');
+                                } else {
+                                  setLinkFilter('unrecon-expenses');
+                                  setSourceFilter(sourceName);
+                                }
+                              }}
+                              aria-pressed={isSelected}
+                              className={`rounded-lg border px-3.5 py-2.5 text-left transition-colors ${
+                                isSelected
+                                  ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
+                                  : isEmpty
+                                    ? 'border-slate-200 bg-white/70 hover:border-slate-300'
+                                    : 'border-slate-200 bg-white hover:border-slate-300'
+                              }`}
+                            >
+                              <div className="flex items-baseline justify-between gap-2">
+                                <div className="flex min-w-0 items-baseline gap-1.5">
+                                  <span
+                                    className="truncate text-xs font-semibold text-slate-900"
+                                    title={item.source}
+                                  >
+                                    {item.source}
+                                  </span>
+                                  <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
+                                    {item.count.toLocaleString()}{' '}
+                                    {item.count === 1 ? 'txn' : 'txns'}
+                                  </span>
+                                </div>
+                                <span
+                                  className={`shrink-0 font-mono text-sm font-semibold tracking-tight tabular-nums ${
+                                    isEmpty ? 'text-slate-400' : 'text-red-700'
+                                  }`}
+                                >
+                                  {item.total.toLocaleString('en-US', {
+                                    style: 'currency',
+                                    currency: 'USD',
+                                  })}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* Summary by Source (Unrecon Income) Cards */}
+            {transactions.length > 0 && (
+              <section
+                aria-label="Summary by Source (Unrecon Income)"
+                className="space-y-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <h2 className="font-semibold text-slate-900">
+                      Summary by Source (Unrecon Income)
+                    </h2>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono text-slate-500 tabular-nums">
+                      {unreconIncomeSummary.activeSourceCount}{' '}
+                      {unreconIncomeSummary.activeSourceCount === 1 ? 'source' : 'sources'}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono text-slate-700 tabular-nums">
+                      {unreconIncomeSummary.totalCount.toLocaleString()}{' '}
+                      {unreconIncomeSummary.totalCount === 1 ? 'txn' : 'txns'} ·{' '}
+                      {unreconIncomeSummary.totalAmount.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono text-slate-500 tabular-nums">
+                      {periodLabel}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    {unreconIncomeSummary.totalCount > 0 && (
+                      <>
                         <button
-                          key={`unrecon-${item.source}`}
+                          type="button"
+                          onClick={handleExportUnreconIncomeCsv}
+                          title="Download all unreconciled Bank Income transactions in this view as CSV"
+                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                        >
+                          <Download className="h-3.5 w-3.5 text-teal-700" aria-hidden="true" />
+                          Export Unrecon CSV
+                        </button>
+                        <button
                           type="button"
                           onClick={() => {
-                            if (isSelected) {
+                            if (linkFilter === 'unrecon-income' && sourceFilter === 'all') {
                               setLinkFilter('all');
-                              setSourceFilter('all');
                             } else {
-                              setLinkFilter('unrecon-expenses');
-                              setSourceFilter(item.source);
+                              setLinkFilter('unrecon-income');
+                              setSourceFilter('all');
                             }
                           }}
-                          aria-pressed={isSelected}
-                          className={`rounded-lg border px-4 py-3.5 text-left transition-colors ${
-                            isSelected
-                              ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
-                              : 'border-slate-200 bg-white hover:border-slate-300'
-                          }`}
+                          className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate text-xs font-semibold text-slate-900">
-                              {item.source}
-                            </span>
-                            <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
-                              {item.count.toLocaleString()}{' '}
-                              {item.count === 1 ? 'txn' : 'txns'}
-                            </span>
-                          </div>
-
-                          <div className="mt-2 font-mono text-base font-semibold tracking-tight text-red-700 tabular-nums">
-                            {item.total.toLocaleString('en-US', {
-                              style: 'currency',
-                              currency: 'USD',
-                            })}
-                          </div>
-
-                          <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 font-mono text-[11px] text-slate-500 tabular-nums">
-                            <span>{sharePct.toFixed(1)}% of unrecon</span>
-                            <span>Is_Recon = No</span>
-                          </div>
+                          {linkFilter === 'unrecon-income' && sourceFilter === 'all'
+                            ? 'Show All Transactions'
+                            : 'Filter Table to Unrecon'}
                         </button>
-                      );
-                    })}
+                      </>
+                    )}
+                    {linkFilter === 'unrecon-income' && sourceFilter !== 'all' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLinkFilter('all');
+                          setSourceFilter('all');
+                        }}
+                        className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
+                      >
+                        Reset Unrecon Filter
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {unreconIncomeSummary.totalCount === 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
+                    All income transactions in this view have Is_Recon = &ldquo;Yes&rdquo;.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {(unreconIncomeSummary.extraSources.length > 0
+                      ? [...SOURCE_CARD_ROWS, unreconIncomeSummary.extraSources]
+                      : SOURCE_CARD_ROWS
+                    ).map((rowSources, rowIndex) => (
+                      <div
+                        key={rowIndex}
+                        className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4"
+                      >
+                        {rowSources.map((sourceName) => {
+                          const item = unreconIncomeSummary.bySourceMap.get(sourceName) ?? {
+                            source: sourceName,
+                            count: 0,
+                            total: 0,
+                          };
+                          const isSelected =
+                            linkFilter === 'unrecon-income' && sourceFilter === sourceName;
+                          const isEmpty = item.count === 0;
+
+                          return (
+                            <button
+                              key={`unrecon-income-${rowIndex}-${sourceName}`}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  setLinkFilter('all');
+                                  setSourceFilter('all');
+                                } else {
+                                  setLinkFilter('unrecon-income');
+                                  setSourceFilter(sourceName);
+                                }
+                              }}
+                              aria-pressed={isSelected}
+                              className={`rounded-lg border px-3.5 py-2.5 text-left transition-colors ${
+                                isSelected
+                                  ? 'border-teal-700 bg-teal-50/40 ring-1 ring-teal-700/20'
+                                  : isEmpty
+                                    ? 'border-slate-200 bg-white/70 hover:border-slate-300'
+                                    : 'border-slate-200 bg-white hover:border-slate-300'
+                              }`}
+                            >
+                              <div className="flex items-baseline justify-between gap-2">
+                                <div className="flex min-w-0 items-baseline gap-1.5">
+                                  <span
+                                    className="truncate text-xs font-semibold text-slate-900"
+                                    title={item.source}
+                                  >
+                                    {item.source}
+                                  </span>
+                                  <span className="shrink-0 font-mono text-[11px] text-slate-500 tabular-nums">
+                                    {item.count.toLocaleString()}{' '}
+                                    {item.count === 1 ? 'txn' : 'txns'}
+                                  </span>
+                                </div>
+                                <span
+                                  className={`shrink-0 font-mono text-sm font-semibold tracking-tight tabular-nums ${
+                                    isEmpty ? 'text-slate-400' : 'text-emerald-700'
+                                  }`}
+                                >
+                                  {item.total.toLocaleString('en-US', {
+                                    style: 'currency',
+                                    currency: 'USD',
+                                  })}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
                 )}
               </section>
@@ -2622,7 +2910,7 @@ export default function App() {
                           <strong>{bankRuleBackfillUpdates.length.toLocaleString()}</strong>{' '}
                           existing row(s) in <strong>{account}</strong> can be updated with the new{' '}
                           <strong>Check Description</strong> (Check_Ledger match),{' '}
-                          <strong>Notes</strong> (Amazon/Home Depot), <strong>Source</strong>, and{' '}
+                          <strong>Notes</strong> (Amazon/Home Depot/Card Vendors), <strong>Source</strong>, and{' '}
                           <strong>Reference #</strong> (WT TRN#, Direct Pay Tran ID, CARD 7574/9130, BRANCH, Mobile Ref #) rules.
                         </>
                       )}
@@ -2712,6 +3000,7 @@ export default function App() {
                   >
                     <option value="all">All Recon States</option>
                     <option value="unrecon-expenses">Unrecon Expenses (Is_Recon = No)</option>
+                    <option value="unrecon-income">Unrecon Income (Is_Recon = No)</option>
                     <option value="recon-expenses">Reconciled Expenses (Is_Recon = Yes)</option>
                     <option value="unlinked-expenses">Unlinked Expenses</option>
                     <option value="linked-expenses">Linked Expenses</option>

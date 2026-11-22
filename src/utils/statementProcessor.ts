@@ -277,13 +277,51 @@ export function categorizeSource(description: string): string {
   return 'Other';
 }
 
-export function extractNotes(description: string): string {
+const US_STATE_CODES =
+  'AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC';
+
+const CARD_TRAIL_CITIES_TX =
+  'HOUSTON|KATY|SUGAR\\s+LAND|CYPRESS|PEARLAND|RICHMOND|STAFFORD|SPRING|MISSOURI\\s+CITY|ROSENBERG|FULSHEAR|THE\\s+WOODLANDS|PASADENA|BELLAIRE|AUSTIN|DALLAS|SAN\\s+ANTONIO';
+
+export function extractCardVendorName(description: string): string {
+  const authMatch = description.match(
+    /\bAUTHORIZED\s+ON\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+(.+)$/i
+  );
+  if (!authMatch) return '';
+
+  let vendor = authMatch[1].trim();
+  // Remove trailing "CARD 9130" or "CARD 7574"
+  vendor = vendor.replace(/\s+CARD\s*(?:9130|7574)\s*$/i, '').trim();
+  // Remove trailing card transaction ID (e.g., S466310066835954, P586269825040169)
+  vendor = vendor.replace(/\s+(?:[A-Z]\d{8,}[A-Z0-9]*|(?=[A-Z0-9]*\d{6,})[A-Z0-9]{12,})\s*$/i, '').trim();
+
+  // Strip trailing store number (e.g., "#03306* KATY TX")
+  vendor = vendor.replace(/\s+#\d[\w*-]*.*$/, '');
+  // Strip trailing phone number and following location/state (e.g., "713-4531616 TX")
+  vendor = vendor.replace(/\s+(?:\(\d{3}\)\s*|\d{3}[-.\s]?)\d{3}[-.\s]?\d{4}\b.*$/, '');
+  // Strip trailing known Texas city + TX or trailing 2-letter US state code
+  vendor = vendor.replace(
+    new RegExp(`(?:,\\s*|\\s+)(?:${CARD_TRAIL_CITIES_TX})\\s+TX\\s*$`, 'i'),
+    ''
+  );
+  vendor = vendor.replace(new RegExp(`\\s+(?:${US_STATE_CODES})\\s*$`), '');
+
+  return vendor.replace(/[\s,-]+$/, '').trim();
+}
+
+export function extractNotes(description: string, sourceHint?: string): string {
   if (/\bamazon\b|\bamzn\b/i.test(description)) {
     return 'Amazon';
   }
   if (/home\s*depot|\bhomedepot\b/i.test(description)) {
     return 'Home Depot';
   }
+
+  const effectiveSource = (sourceHint ?? categorizeSource(description)).trim().toUpperCase();
+  if (effectiveSource === 'CARD9130' || effectiveSource === 'CARD7574') {
+    return extractCardVendorName(description);
+  }
+
   return '';
 }
 
@@ -383,7 +421,7 @@ export async function processStatements(
       const transactionType: TransactionType = amount >= 0 ? 'Income' : 'Expense';
       const source = categorizeSource(rawDesc);
       const referenceNumber = extractReferenceNumber(rawDesc, normalizedCheck, source);
-      const notes = extractNotes(rawDesc);
+      const notes = extractNotes(rawDesc, source);
 
       let syncStatus: NormalizedTransaction['syncStatus'] = 'pending';
       if (syncedIds.has(uniqueId)) {
@@ -653,15 +691,7 @@ export function findBankRuleBackfillUpdates(
 
     const effectiveDesc = matchedCheckDesc ?? desc;
 
-    // 1. Notes: Amazon or Home Depot
-    const expectedNote = extractNotes(effectiveDesc);
-    const currentNotes = (tx.notes ?? '').trim();
-    if (expectedNote && currentNotes !== expectedNote && !currentNotes) {
-      patch.notes = expectedNote;
-      changed = true;
-    }
-
-    // 2. Source: Merge WIRE -> WT, rename Transfer -> ACC-T, and re-categorize legacy Amazon, Home Depot, empty, or Other sources
+    // 1. Source: Merge WIRE -> WT, rename Transfer -> ACC-T, and re-categorize legacy Amazon, Home Depot, empty, or Other sources
     const currSrcLower = tx.source.trim().toLowerCase();
     let nextSource = tx.source;
     if (currSrcLower === 'wire') {
@@ -678,6 +708,15 @@ export function findBankRuleBackfillUpdates(
     }
     if (nextSource !== tx.source) {
       patch.source = nextSource;
+      changed = true;
+    }
+
+    // 2. Notes: Amazon, Home Depot, or Vendor Name for CARD9130 / CARD7574
+    const expectedNote = extractNotes(effectiveDesc, nextSource);
+    const currentNotes = (tx.notes ?? '').trim();
+    const hasProtectedVendorNote = /\bamazon\b|home\s*depot/i.test(currentNotes);
+    if (expectedNote && !hasProtectedVendorNote && currentNotes !== expectedNote && !currentNotes) {
+      patch.notes = expectedNote;
       changed = true;
     }
 

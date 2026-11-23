@@ -7,7 +7,10 @@ import {
   Plus,
 } from 'lucide-react';
 import { ExpenseRecord } from '../../types/expense';
+import { AllocationSummary } from '../../types/reconciliation';
+import { expenseRecordKey } from '../../utils/reconAllocations';
 import { GoogleSignInButton } from '../GoogleSignInButton';
+import { ReconLinkCell } from '../ReconLinkCell';
 import { TablePagination } from '../TablePagination';
 
 interface ExpenseLedgerGridProps {
@@ -18,6 +21,7 @@ interface ExpenseLedgerGridProps {
   isLoggingIn: boolean;
   dateSortOrder: 'desc' | 'asc';
   updatingReconExpId: string | null;
+  allocationMap?: Map<string, AllocationSummary>;
   onSignIn: () => void;
   onToggleDateSort: () => void;
   onEditRecord: (record: ExpenseRecord) => void;
@@ -35,6 +39,7 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
   isLoggingIn,
   dateSortOrder,
   updatingReconExpId,
+  allocationMap,
   onSignIn,
   onToggleDateSort,
   onEditRecord,
@@ -218,8 +223,29 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                 >
                   <td className="py-2 pl-3 pr-2 whitespace-nowrap">
                     {(() => {
-                      const isLinked = rec.reconSourceId.trim() !== '';
-                      const isLockedYes = isLinked && rec.isRecon === 'Yes';
+                      const alloc = allocationMap?.get(expenseRecordKey(rec));
+                      const isPartialLink = alloc?.status === 'partial';
+                      const isFullLink =
+                        alloc?.status === 'full' ||
+                        (!alloc?.links.length &&
+                          rec.reconSourceId.trim() !== '' &&
+                          rec.isRecon === 'Yes');
+                      const isReconLocked = isFullLink || isPartialLink;
+                      const reconLockTitle =
+                        isPartialLink && alloc
+                          ? `Partially linked (${alloc.allocatedAmount.toLocaleString('en-US', {
+                              style: 'currency',
+                              currency: 'USD',
+                            })} / ${alloc.totalAmount.toLocaleString('en-US', {
+                              style: 'currency',
+                              currency: 'USD',
+                            })}) — allocate remaining ${alloc.remainingAmount.toLocaleString(
+                              'en-US',
+                              { style: 'currency', currency: 'USD' }
+                            )} to mark Yes`
+                          : isFullLink
+                            ? 'Locked to Yes while fully linked to Bank_Ledger'
+                            : `Set Is_Recon for ${rec.expId}`;
                       return (
                         <div className="space-y-1">
                           <div>
@@ -239,17 +265,15 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                               onChange={(e) =>
                                 onUpdateIsRecon(rec, e.target.value === 'Yes' ? 'Yes' : 'No')
                               }
-                              disabled={updatingReconExpId === rec.expId || isLockedYes}
+                              disabled={updatingReconExpId === rec.expId || isReconLocked}
                               aria-label={`Is_Recon for ${rec.expId}`}
-                              title={
-                                isLockedYes
-                                  ? 'Locked to Yes while linked to Bank_Ledger'
-                                  : `Set Is_Recon for ${rec.expId}`
-                              }
+                              title={reconLockTitle}
                               className={`rounded border bg-white px-1.5 py-0.5 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${
                                 rec.isRecon === 'Yes'
                                   ? 'border-emerald-300 text-emerald-800'
-                                  : 'border-slate-300 text-slate-700'
+                                  : isPartialLink
+                                    ? 'border-amber-300 text-amber-800'
+                                    : 'border-slate-300 text-slate-700'
                               }`}
                             >
                               <option value="No">No</option>
@@ -332,16 +356,20 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                       </div>
                     )}
                   </td>
-                  <td className="max-w-[140px] py-2 pl-2 pr-3">
+                  <td className="max-w-[180px] py-2 pl-2 pr-3">
                     <div className="truncate text-slate-700" title={rec.reconSource}>
                       {rec.reconSource || '—'}
                     </div>
-                    {rec.reconSourceId && (
-                      <div
-                        className="mt-0.5 truncate font-mono text-[11px] text-slate-500 tabular-nums"
-                        title={rec.reconSourceId}
-                      >
-                        {rec.reconSourceId}
+                    {(rec.reconSourceId ||
+                      (allocationMap?.get(expenseRecordKey(rec))?.links.length ?? 0) > 0) && (
+                      <div className="mt-0.5">
+                        <ReconLinkCell
+                          summary={allocationMap?.get(expenseRecordKey(rec))}
+                          fallbackId={rec.reconSourceId}
+                          partnerLabel="Bank Unique_ID"
+                          linkDirection="to-bank"
+                          emptyLabel=""
+                        />
                       </div>
                     )}
                   </td>

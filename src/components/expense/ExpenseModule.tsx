@@ -11,7 +11,6 @@ import {
   FileSpreadsheet,
   FileText,
   Plus,
-  Receipt,
   RefreshCw,
   Search,
   Trash2,
@@ -31,6 +30,8 @@ import {
   detectExpenseCsvMapping,
   processExpenseCsvs,
 } from '../../utils/expenseProcessor';
+import { ReconLink } from '../../types/reconciliation';
+import { AccountType } from '../../types/statement';
 import {
   appendExpenseRecords,
   CANONICAL_EXPENSE_HEADERS,
@@ -39,7 +40,24 @@ import {
   updateExpenseIsRecon,
   updateExpenseRecord,
 } from '../../services/expenseSheets';
-import { SheetsApiError } from '../../services/googleSheets';
+import {
+  fetchSheetLedger,
+  SheetsApiError,
+  TARGET_SPREADSHEET_ID,
+} from '../../services/googleSheets';
+import { fetchReconLinks } from '../../services/reconLinksSheets';
+import {
+  executeAddReconLinks,
+  executeUnlinkReconLink,
+  syncExpenseCategoryToReconLinks,
+} from '../../services/reconCommits';
+import {
+  buildEffectiveReconLinks,
+  computeBankAllocationMap,
+  computeExpenseAllocationMap,
+  expenseRecordKey,
+} from '../../utils/reconAllocations';
+import { BankLedgerEntry } from '../../utils/reconciler';
 import { clearCachedToken, getAccessToken } from '../../services/firebaseAuth';
 import { ExpenseCsvMappingModal } from './ExpenseCsvMappingModal';
 import { ExpenseEntryModal } from './ExpenseEntryModal';
@@ -96,6 +114,10 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   const [sheetMeta, setSheetMeta] = useState<ExpenseSheetMeta | null>(null);
   const [lookups, setLookups] = useState<ExpenseLookups>(EMPTY_LOOKUPS);
   const [sheetRecords, setSheetRecords] = useState<ExpenseRecord[]>([]);
+  const [reconLinks, setReconLinks] = useState<ReconLink[]>([]);
+  const [bankEntriesForModal, setBankEntriesForModal] = useState<BankLedgerEntry[]>([]);
+  const [isLoadingModalBanks, setIsLoadingModalBanks] = useState(false);
+  const [isMutatingExpLink, setIsMutatingExpLink] = useState(false);
   const [existingIds, setExistingIds] = useState<Set<string>>(new Set());
   const [hasLoadedSheet, setHasLoadedSheet] = useState(false);
   const [isLoadingSheet, setIsLoadingSheet] = useState(false);
@@ -153,11 +175,17 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       setIsLoadingSheet(true);
       setErrorMessage(null);
       try {
-        const loaded = await fetchExpenseWorkspace(token, EXPENSE_SPREADSHEET_ID);
+        const [loaded, loadedLinks] = await Promise.all([
+          fetchExpenseWorkspace(token, EXPENSE_SPREADSHEET_ID),
+          fetchReconLinks(token, TARGET_SPREADSHEET_ID).catch(() => null),
+        ]);
         setSheetMeta(loaded.meta);
         setLookups(loaded.lookups);
         setSheetRecords(loaded.records);
         setExistingIds(loaded.existingIds);
+        if (loadedLinks) {
+          setReconLinks(loadedLinks.links);
+        }
         setHasLoadedSheet(true);
       } catch (err) {
         if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
@@ -187,6 +215,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       setSheetMeta(null);
       setLookups(EMPTY_LOOKUPS);
       setSheetRecords([]);
+      setReconLinks([]);
+      setBankEntriesForModal([]);
       setExistingIds(new Set());
       setHasLoadedSheet(false);
     }
@@ -387,10 +417,108 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     setEntryModalState({ isOpen: true, mode: 'create', record: null });
   };
 
-  const handleOpenEditRecord = (record: ExpenseRecord) => {
+  const handleOpenEditRecord = async (record: ExpenseRecord) => {
     setErrorMessage(null);
     setStatusMessage(null);
     setEntryModalState({ isOpen: true, mode: 'edit', record });
+
+    if (record.sourceOrigin !== 'sheet' || !record.sheetRowNumber) return;
+    const token = await getAccessToken();
+    if (!token) return;
+    setIsLoadingModalBanks(true);
+    try {
+      const [pujaLoaded, regularLoaded, loadedLinks] = await Promise.all([
+        fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Puja'),
+        fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Regular'),
+        fetchReconLinks(token, TARGET_SPREADSHEET_ID).catch(() => null),
+      ]);
+      setBankEntriesForModal([
+        ...pujaLoaded.transactions.map((tx) => ({ tab: 'Puja' as AccountType, tx })),
+        ...regularLoaded.transactions.map((tx) => ({ tab: 'Regular' as AccountType, tx })),
+      ]);
+      if (loadedLinks) {
+        setReconLinks(loadedLinks.links);
+      }
+    } catch {
+      // Non-blocking: Expense fields remain editable even if Bank_Ledger picker fails
+    } finally {
+      setIsLoadingModalBanks(false);
+    }
+  };
+
+  const handleAddExpenseModalLink = async (
+    expense: ExpenseRecord,
+    bankEntry: BankLedgerEntry,
+    allocatedAmount: number,
+    linkNotes: string
+  ) => {
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      throw new Error('Sign in with Google to link Bank transactions.');
+    }
+
+    setIsMutatingExpLink(true);
+    try {
+      const res = await executeAddReconLinks(token, [
+        {
+          bankTab: bankEntry.tab,
+          bankUniqueId: bankEntry.tx.uniqueId,
+          targetType: 'Expense',
+          targetId: expense.expId,
+          allocatedAmount,
+          category: expense.category.trim(),
+          linkMode: 'Manual',
+          notes: linkNotes,
+        },
+      ]);
+      setReconLinks(res.reconLinks);
+      setSheetRecords(res.expenseWorkspace.records);
+      setExistingIds(res.expenseWorkspace.existingIds);
+      setBankEntriesForModal([
+        ...res.bankLedgers.Puja.transactions.map((tx) => ({ tab: 'Puja' as AccountType, tx })),
+        ...res.bankLedgers.Regular.transactions.map((tx) => ({ tab: 'Regular' as AccountType, tx })),
+      ]);
+      setStatusMessage(
+        `Linked Expense ${expense.expId} ↔ ${bankEntry.tab} ${bankEntry.tx.uniqueId} ($${allocatedAmount.toFixed(2)}) in Recon_Links.`
+      );
+      onExpenseMutated?.();
+    } finally {
+      setIsMutatingExpLink(false);
+    }
+  };
+
+  const handleUnlinkExpenseModalLink = async (
+    expense: ExpenseRecord,
+    link: ReconLink
+  ) => {
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      throw new Error('Sign in with Google to remove links.');
+    }
+
+    setIsMutatingExpLink(true);
+    try {
+      const res = await executeUnlinkReconLink(token, {
+        bankUniqueId: link.bankUniqueId,
+        targetType: link.targetType,
+        targetId: link.targetId || expense.expId,
+      });
+      setReconLinks(res.reconLinks);
+      setSheetRecords(res.expenseWorkspace.records);
+      setExistingIds(res.expenseWorkspace.existingIds);
+      setBankEntriesForModal([
+        ...res.bankLedgers.Puja.transactions.map((tx) => ({ tab: 'Puja' as AccountType, tx })),
+        ...res.bankLedgers.Regular.transactions.map((tx) => ({ tab: 'Regular' as AccountType, tx })),
+      ]);
+      setStatusMessage(
+        `Unlinked ${link.bankUniqueId} ↔ ${expense.expId} and updated reconciliation status.`
+      );
+      onExpenseMutated?.();
+    } finally {
+      setIsMutatingExpLink(false);
+    }
   };
 
   const handleEntryModalSubmit = async (
@@ -482,6 +610,16 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
         );
       } else if (pendingMutation.kind === 'edit-update') {
         await updateExpenseRecord(token, sheetMeta, pendingMutation.after);
+        if (
+          pendingMutation.before.category.trim() !==
+          pendingMutation.after.category.trim()
+        ) {
+          await syncExpenseCategoryToReconLinks(
+            token,
+            pendingMutation.after.expId,
+            pendingMutation.after.category
+          ).catch(() => 0);
+        }
         await loadWorkspace(token);
         setStatusMessage(
           `Saved changes for ${pendingMutation.after.expId} (row #${pendingMutation.after.sheetRowNumber}).`
@@ -647,6 +785,35 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   };
 
+  const effectiveExpLinks = useMemo(
+    () => buildEffectiveReconLinks(reconLinks, bankEntriesForModal, allRecords),
+    [reconLinks, bankEntriesForModal, allRecords]
+  );
+
+  const expAllocMap = useMemo(
+    () => computeExpenseAllocationMap(allRecords, effectiveExpLinks),
+    [allRecords, effectiveExpLinks]
+  );
+
+  const modalBankAllocMap = useMemo(
+    () => computeBankAllocationMap(bankEntriesForModal, effectiveExpLinks),
+    [bankEntriesForModal, effectiveExpLinks]
+  );
+
+  const liveEntryModalRecord = useMemo(() => {
+    if (entryModalState.mode !== 'edit' || !entryModalState.record) {
+      return entryModalState.record;
+    }
+    const target = entryModalState.record;
+    return (
+      allRecords.find(
+        (r) =>
+          r.expId === target.expId &&
+          r.sheetRowNumber === target.sheetRowNumber
+      ) ?? target
+    );
+  }, [entryModalState, allRecords]);
+
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const matched = allRecords.filter((rec) => {
@@ -654,8 +821,14 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       if (originFilter === 'staged' && rec.sourceOrigin !== 'csv') return false;
       if (linkFilter === 'unrecon' && (rec.isRecon ?? 'No') === 'Yes') return false;
       if (linkFilter === 'recon' && (rec.isRecon ?? 'No') !== 'Yes') return false;
-      if (linkFilter === 'unlinked' && rec.reconSourceId.trim() !== '') return false;
-      if (linkFilter === 'linked' && rec.reconSourceId.trim() === '') return false;
+      const hasAllocLinks =
+        (expAllocMap.get(expenseRecordKey(rec))?.links.length ?? 0) > 0;
+      if (linkFilter === 'unlinked' && (rec.reconSourceId.trim() !== '' || hasAllocLinks)) {
+        return false;
+      }
+      if (linkFilter === 'linked' && rec.reconSourceId.trim() === '' && !hasAllocLinks) {
+        return false;
+      }
       if (
         categoryFilter !== 'all' &&
         rec.category.toLowerCase() !== categoryFilter.toLowerCase()
@@ -697,6 +870,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     });
   }, [
     allRecords,
+    expAllocMap,
     originFilter,
     linkFilter,
     categoryFilter,
@@ -713,19 +887,54 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     let totalCents = 0;
     let paidCents = 0;
     let acceptedCents = 0;
+    let unreconCents = 0;
+    let minDate = '';
+    let maxDate = '';
+
     for (const rec of filteredRecords) {
       const cents = Math.round(rec.amount * 100);
       totalCents += cents;
       const st = rec.status.trim().toLowerCase();
       if (st === 'paid') paidCents += cents;
       if (st === 'accepted') acceptedCents += cents;
+
+      if ((rec.isRecon ?? 'No') !== 'Yes') {
+        const alloc = expAllocMap.get(expenseRecordKey(rec));
+        const remCents =
+          alloc && alloc.links.length > 0 ? alloc.remainingCents : cents;
+        unreconCents += remCents;
+      }
+
+      if (rec.date) {
+        if (!minDate || rec.date < minDate) minDate = rec.date;
+        if (!maxDate || rec.date > maxDate) maxDate = rec.date;
+      }
     }
+
     return {
       total: totalCents / 100,
       paid: paidCents / 100,
       accepted: acceptedCents / 100,
+      unreconExpense: unreconCents / 100,
+      fromDate: startDate || minDate || dateBounds.minDate,
+      toDate: endDate || maxDate || dateBounds.maxDate,
     };
-  }, [filteredRecords]);
+  }, [
+    filteredRecords,
+    expAllocMap,
+    startDate,
+    endDate,
+    dateBounds.minDate,
+    dateBounds.maxDate,
+  ]);
+
+  const formatSlashDate = (isoDate: string): string => {
+    if (!isoDate) return '--/--/----';
+    const parts = isoDate.split('-');
+    if (parts.length !== 3) return isoDate;
+    const [y, m, d] = parts;
+    return `${m.padStart(2, '0')}/${d.padStart(2, '0')}/${y}`;
+  };
 
   const categorySummaries = useMemo(() => {
     const map = new Map<string, { category: string; count: number; totalCents: number }>();
@@ -806,16 +1015,19 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
         if (!hay.includes(q)) continue;
       }
 
-      const cents = Math.round(rec.amount * 100);
+      const fullCents = Math.round(rec.amount * 100);
+      const alloc = expAllocMap.get(expenseRecordKey(rec));
+      const remCents =
+        alloc && alloc.links.length > 0 ? alloc.remainingCents : fullCents;
       const cat = rec.category || 'Uncategorized';
       const entry = map.get(cat) ?? { category: cat, count: 0, totalCents: 0 };
       entry.count++;
-      entry.totalCents += cents;
+      entry.totalCents += remCents;
       map.set(cat, entry);
 
       unreconRecords.push(rec);
       totalCount++;
-      totalCents += cents;
+      totalCents += remCents;
     }
 
     const items = Array.from(map.values())
@@ -838,6 +1050,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     };
   }, [
     allRecords,
+    expAllocMap,
     originFilter,
     statusFilter,
     pujaFilter,
@@ -1299,29 +1512,53 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
           {/* KPI Summary Row */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="rounded-lg border border-slate-200 bg-white px-5 py-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-slate-600">Total Expenses</span>
-                <Receipt className="h-4 w-4 text-slate-500" aria-hidden="true" />
-              </div>
-              <div className="mt-2 font-mono text-2xl font-semibold tracking-tight text-slate-900 tabular-nums">
-                {expenseTotals.total.toLocaleString('en-US', {
-                  style: 'currency',
-                  currency: 'USD',
-                })}
-              </div>
-              <div className="mt-1.5 text-xs text-slate-500">
-                <span className="font-mono tabular-nums">
-                  {filteredRecords.length.toLocaleString()}
-                </span>{' '}
-                {filteredRecords.length === 1 ? 'record' : 'records'}
-                <span aria-hidden="true"> · </span>
-                <span className="font-mono tabular-nums">{periodLabel}</span>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-base font-semibold text-slate-900">
+                      Total Expense
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      <span className="font-mono tabular-nums">
+                        {filteredRecords.length.toLocaleString()}
+                      </span>{' '}
+                      {filteredRecords.length === 1 ? 'transaction' : 'transactions'}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-600">
+                    From:{' '}
+                    <span className="font-mono tabular-nums">
+                      {formatSlashDate(expenseTotals.fromDate)}
+                    </span>{' '}
+                    to{' '}
+                    <span className="font-mono tabular-nums">
+                      {formatSlashDate(expenseTotals.toDate)}
+                    </span>
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="font-mono text-2xl font-semibold tracking-tight text-red-700 tabular-nums">
+                    {expenseTotals.total.toLocaleString('en-US', {
+                      style: 'currency',
+                      currency: 'USD',
+                    })}
+                  </div>
+                  <div className="mt-1 text-sm text-slate-700">
+                    Un-Recon Expense:{' '}
+                    <span className="font-mono font-semibold text-red-700 tabular-nums">
+                      {expenseTotals.unreconExpense.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-white px-5 py-4">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-slate-600">
+                <span className="text-base font-semibold text-slate-900">
                   Paid vs Accepted Breakdown
                 </span>
                 <span className="text-xs text-slate-500">Filtered View</span>
@@ -1329,7 +1566,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               <div className="mt-2 flex items-baseline gap-6 font-mono tabular-nums">
                 <div>
                   <div className="text-[11px] text-slate-500">Paid</div>
-                  <div className="text-lg font-semibold text-emerald-700">
+                  <div className="text-lg font-semibold text-red-700">
                     {expenseTotals.paid.toLocaleString('en-US', {
                       style: 'currency',
                       currency: 'USD',
@@ -1338,7 +1575,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                 </div>
                 <div>
                   <div className="text-[11px] text-slate-500">Accepted</div>
-                  <div className="text-lg font-semibold text-teal-700">
+                  <div className="text-lg font-semibold text-red-700">
                     {expenseTotals.accepted.toLocaleString('en-US', {
                       style: 'currency',
                       currency: 'USD',
@@ -1817,11 +2054,12 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
               isLoggingIn={isLoggingIn}
               dateSortOrder={dateSortOrder}
               updatingReconExpId={updatingReconExpId}
+              allocationMap={expAllocMap}
               onSignIn={onSignIn}
               onToggleDateSort={() =>
                 setDateSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))
               }
-              onEditRecord={handleOpenEditRecord}
+              onEditRecord={(rec) => void handleOpenEditRecord(rec)}
               onUpdateIsRecon={handleUpdateExpenseIsRecon}
               onTriggerUpload={() => fileInputRef.current?.click()}
               onOpenManualEntry={handleOpenManualEntry}
@@ -1841,13 +2079,26 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       <ExpenseEntryModal
         isOpen={entryModalState.isOpen}
         mode={entryModalState.mode}
-        initialRecord={entryModalState.record}
+        initialRecord={liveEntryModalRecord}
         lookups={lookups}
         existingIds={allKnownIds}
-        onClose={() =>
-          setEntryModalState({ isOpen: false, mode: 'create', record: null })
+        allocationSummary={
+          liveEntryModalRecord
+            ? expAllocMap.get(expenseRecordKey(liveEntryModalRecord))
+            : undefined
         }
+        allBankEntries={bankEntriesForModal}
+        bankAllocMap={modalBankAllocMap}
+        isLoadingPartnerRecords={isLoadingModalBanks}
+        isMutatingLink={isMutatingExpLink}
+        onClose={() => {
+          if (!isMutatingExpLink) {
+            setEntryModalState({ isOpen: false, mode: 'create', record: null });
+          }
+        }}
         onSubmit={handleEntryModalSubmit}
+        onAddLink={handleAddExpenseModalLink}
+        onUnlink={handleUnlinkExpenseModalLink}
       />
 
       <ExpenseConfirmModal

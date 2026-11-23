@@ -1,5 +1,20 @@
 import { ExpenseRecord } from '../types/expense';
+import { ReconLink } from '../types/reconciliation';
 import { AccountType, NormalizedTransaction } from '../types/statement';
+import {
+  bankEntryKey,
+  buildEffectiveReconLinks,
+  computeBankAllocationMap,
+  computeDerivedLedgerSyncPatches,
+  computeExpenseAllocationMap,
+  expenseRecordKey,
+  formatIdList,
+  fromCents,
+  MULTIPLE_CATEGORY_LABEL,
+  parseIdList,
+  RECON_PENNY_TOLERANCE_CENTS,
+  toCents,
+} from './reconAllocations';
 
 export interface BankLedgerEntry {
   tab: AccountType;
@@ -21,6 +36,18 @@ export interface ReconciliationMatch {
   needsExpenseIsReconUpdate: boolean;
   needsBankUpdate: boolean;
   needsExpenseUpdate: boolean;
+  /** Dollar amount matched/allocated by this specific bank<->expense leg */
+  matchedAmount?: number;
+  /** Full comma-separated Target_ID value for Bank_Ledger after applying this match */
+  resultingBankTargetId?: string;
+  /** Derived Is_Recon value ('Yes' | 'No') for Bank_Ledger after applying this match */
+  resultingBankIsRecon?: 'Yes' | 'No';
+  /** Derived Category value (single category or 'Multiple') for Bank_Ledger after applying this match */
+  resultingBankCategory?: string;
+  /** Full comma-separated Recon_Source_ID value for Expense_Ledger after applying this match */
+  resultingExpenseReconId?: string;
+  /** Derived Is_Recon value ('Yes' | 'No') for Expense_Ledger after applying this match */
+  resultingExpenseIsRecon?: 'Yes' | 'No';
 }
 
 export interface ReconciliationAnalysis {
@@ -81,13 +108,20 @@ function scoreCandidate(
   bankEntry: BankLedgerEntry,
   expense: ExpenseRecord,
   dateDiffDays: number,
-  ignoreDate: boolean
+  ignoreDate: boolean,
+  isRemainingBalanceMatch: boolean
 ): { score: number; reason: string } {
   const { tab, tx } = bankEntry;
   let score = ignoreDate ? 100 : 100 - dateDiffDays * 10;
   const reasons: string[] = [];
 
-  if (ignoreDate) {
+  if (isRemainingBalanceMatch) {
+    reasons.push(
+      dateDiffDays === 0
+        ? 'Remaining balance · Same date'
+        : `Remaining balance (±${dateDiffDays}d)`
+    );
+  } else if (ignoreDate) {
     reasons.push(
       dateDiffDays === 0 ? 'Exact amount · Same date' : `Exact amount (${dateDiffDays}d apart)`
     );
@@ -159,7 +193,8 @@ function scoreCandidate(
 export function findExpenseMatches(
   bankEntries: BankLedgerEntry[],
   expenses: ExpenseRecord[],
-  dateToleranceDays: number | null = 0
+  dateToleranceDays: number | null = 0,
+  reconLinks: ReconLink[] = []
 ): ReconciliationAnalysis {
   const validBankExpenses = bankEntries.filter(
     ({ tx }) =>
@@ -177,51 +212,72 @@ export function findExpenseMatches(
       Math.round(Math.abs(exp.amount) * 100) > 0
   );
 
-  const usedBankKeys = new Set<string>();
-  const usedExpKeys = new Set<string>();
-  const matches: ReconciliationMatch[] = [];
-  let alreadyReconciledCount = 0;
+  const effectiveLinks = buildEffectiveReconLinks(
+    reconLinks,
+    validBankExpenses,
+    validExpenses
+  );
 
-  const expKey = (e: ExpenseRecord) => `${e.expId}::${e.sheetRowNumber}`;
-  const bankKey = (b: BankLedgerEntry) => `${b.tab}::${b.tx.uniqueId}::${b.tx.sheetRowNumber}`;
+  const bankAllocMap = computeBankAllocationMap(validBankExpenses, effectiveLinks);
+  const expAllocMap = computeExpenseAllocationMap(validExpenses, effectiveLinks);
 
-  const bankById = new Map<string, BankLedgerEntry[]>();
+  const bankById = new Map<string, BankLedgerEntry>();
   for (const entry of validBankExpenses) {
     const idNorm = entry.tx.uniqueId.trim().toLowerCase();
-    const arr = bankById.get(idNorm) ?? [];
-    arr.push(entry);
-    bankById.set(idNorm, arr);
+    if (idNorm && !bankById.has(idNorm)) {
+      bankById.set(idNorm, entry);
+    }
   }
 
-  const expById = new Map<string, ExpenseRecord[]>();
+  const expById = new Map<string, ExpenseRecord>();
   for (const exp of validExpenses) {
     const idNorm = exp.expId.trim().toLowerCase();
-    const arr = expById.get(idNorm) ?? [];
-    arr.push(exp);
-    expById.set(idNorm, arr);
+    if (idNorm && !expById.has(idNorm)) {
+      expById.set(idNorm, exp);
+    }
   }
 
-  // Pass 1: Detect already-linked pairs (both fully synced & pairs needing backfill of ID, Is_Recon, or Category)
-  const evaluateLinkedPair = (
-    bankEntry: BankLedgerEntry,
-    matchedExp: ExpenseRecord,
-    bk: string,
-    ek: string,
-    defaultReason: string
-  ) => {
-    const bankTarget = bankEntry.tx.targetId?.trim() ?? '';
-    const expReconId = matchedExp.reconSourceId.trim();
+  const matches: ReconciliationMatch[] = [];
+  let alreadyReconciledCount = 0;
+  const seenMatchKeys = new Set<string>();
 
+  // Pass 0: Detect already-linked pairs (both fully synced & pairs needing backfill of IDs, Is_Recon, or Category)
+  for (const link of effectiveLinks) {
+    if (link.targetType !== 'Expense') continue;
+    const bankEntry = bankById.get(link.bankUniqueId.trim().toLowerCase());
+    const matchedExp = expById.get(link.targetId.trim().toLowerCase());
+    if (!bankEntry || !matchedExp) continue;
+
+    const bk = bankEntryKey(bankEntry);
+    const ek = expenseRecordKey(matchedExp);
+    const matchKey = `${bk}<->${ek}`;
+    if (seenMatchKeys.has(matchKey)) continue;
+    seenMatchKeys.add(matchKey);
+
+    const bankSummary = bankAllocMap.get(bk);
+    const expSummary = expAllocMap.get(ek);
+    if (!bankSummary || !expSummary) continue;
+
+    const expectedBankTargetId = formatIdList(bankSummary.partnerIds);
+    const currentBankTargetId = formatIdList(parseIdList(bankEntry.tx.targetId));
     const needsBankTargetIdUpdate =
-      bankTarget.toLowerCase() !== matchedExp.expId.trim().toLowerCase();
-    const needsBankIsReconUpdate = bankEntry.tx.isRecon !== 'Yes';
-    const expCat = matchedExp.category.trim();
-    const needsBankCategoryUpdate =
-      Boolean(expCat) && (bankEntry.tx.category ?? '').trim() !== expCat;
+      currentBankTargetId.toLowerCase() !== expectedBankTargetId.toLowerCase();
 
+    const expectedBankIsRecon = bankSummary.derivedIsRecon;
+    const needsBankIsReconUpdate = (bankEntry.tx.isRecon ?? 'No') !== expectedBankIsRecon;
+
+    const expectedBankCategory = bankSummary.derivedCategory ?? '';
+    const needsBankCategoryUpdate =
+      Boolean(expectedBankCategory) &&
+      (bankEntry.tx.category ?? '').trim() !== expectedBankCategory;
+
+    const expectedExpReconId = formatIdList(expSummary.partnerIds);
+    const currentExpReconId = formatIdList(parseIdList(matchedExp.reconSourceId));
     const needsExpenseReconIdUpdate =
-      expReconId.toLowerCase() !== bankEntry.tx.uniqueId.trim().toLowerCase();
-    const needsExpenseIsReconUpdate = matchedExp.isRecon !== 'Yes';
+      currentExpReconId.toLowerCase() !== expectedExpReconId.toLowerCase();
+
+    const expectedExpIsRecon = expSummary.derivedIsRecon;
+    const needsExpenseIsReconUpdate = matchedExp.isRecon !== expectedExpIsRecon;
 
     const needsBankUpdate =
       needsBankTargetIdUpdate || needsBankIsReconUpdate || needsBankCategoryUpdate;
@@ -229,8 +285,10 @@ export function findExpenseMatches(
       needsExpenseReconIdUpdate || needsExpenseIsReconUpdate;
 
     if (!needsBankUpdate && !needsExpenseUpdate) {
-      alreadyReconciledCount++;
-      return;
+      if (bankSummary.status === 'full' || expSummary.status === 'full') {
+        alreadyReconciledCount++;
+      }
+      continue;
     }
 
     const bankDays = parseIsoDateToUtcDays(bankEntry.tx.date);
@@ -238,16 +296,23 @@ export function findExpenseMatches(
     const diff =
       bankDays !== null && expDays !== null ? Math.abs(bankDays - expDays) : 0;
 
-    const reasonParts: string[] = [defaultReason];
+    const reasonParts: string[] = [];
+    if (needsBankTargetIdUpdate && !needsExpenseReconIdUpdate) {
+      reasonParts.push('Recon Source_ID linked · Backfill Target ID');
+    } else if (!needsBankTargetIdUpdate && needsExpenseReconIdUpdate) {
+      reasonParts.push('Target ID linked · Backfill Recon Source_ID');
+    } else {
+      reasonParts.push('Linked pair');
+    }
     if (needsBankIsReconUpdate || needsExpenseIsReconUpdate) {
-      reasonParts.push('Set Is_Recon = Yes');
+      reasonParts.push(`Sync Is_Recon`);
     }
     if (needsBankCategoryUpdate) {
-      reasonParts.push(`Copy Category "${expCat}"`);
+      reasonParts.push(`Set Category "${expectedBankCategory}"`);
     }
 
     matches.push({
-      matchKey: `${bk}<->${ek}`,
+      matchKey,
       bankTab: bankEntry.tab,
       bankTx: bankEntry.tx,
       expense: matchedExp,
@@ -261,76 +326,35 @@ export function findExpenseMatches(
       needsExpenseIsReconUpdate,
       needsBankUpdate,
       needsExpenseUpdate,
+      matchedAmount: link.allocatedAmount,
+      resultingBankTargetId: expectedBankTargetId,
+      resultingBankIsRecon: expectedBankIsRecon,
+      resultingBankCategory: expectedBankCategory || undefined,
+      resultingExpenseReconId: expectedExpReconId,
+      resultingExpenseIsRecon: expectedExpIsRecon,
     });
-  };
-
-  for (const entry of validBankExpenses) {
-    const bk = bankKey(entry);
-    if (usedBankKeys.has(bk)) continue;
-
-    const existingTarget = entry.tx.targetId?.trim() ?? '';
-    if (!existingTarget) continue;
-
-    const linkedExps = expById.get(existingTarget.toLowerCase()) ?? [];
-    const matchedExp = linkedExps.find((e) => !usedExpKeys.has(expKey(e)));
-    if (!matchedExp) continue;
-
-    const ek = expKey(matchedExp);
-    usedBankKeys.add(bk);
-    usedExpKeys.add(ek);
-
-    const reconMatches =
-      matchedExp.reconSourceId.trim().toLowerCase() === entry.tx.uniqueId.trim().toLowerCase();
-    evaluateLinkedPair(
-      entry,
-      matchedExp,
-      bk,
-      ek,
-      reconMatches ? 'Linked pair' : 'Target ID linked · Backfill Recon Source_ID'
-    );
   }
 
-  for (const exp of validExpenses) {
-    const ek = expKey(exp);
-    if (usedExpKeys.has(ek)) continue;
+  // Pass 1: Match remaining unallocated Bank Expenses vs remaining unallocated Expense Ledger records (1:1 exact remaining balance)
+  const eligibleBank = validBankExpenses.filter((entry) => {
+    const summary = bankAllocMap.get(bankEntryKey(entry));
+    return summary && summary.remainingCents > RECON_PENNY_TOLERANCE_CENTS;
+  });
 
-    const existingRecon = exp.reconSourceId.trim();
-    if (!existingRecon) continue;
+  const eligibleExpenses = validExpenses.filter((exp) => {
+    const summary = expAllocMap.get(expenseRecordKey(exp));
+    return summary && summary.remainingCents > RECON_PENNY_TOLERANCE_CENTS;
+  });
 
-    const linkedBanks = bankById.get(existingRecon.toLowerCase()) ?? [];
-    const matchedBank = linkedBanks.find((b) => !usedBankKeys.has(bankKey(b)));
-    if (!matchedBank) continue;
-
-    const bk = bankKey(matchedBank);
-    usedBankKeys.add(bk);
-    usedExpKeys.add(ek);
-
-    const targetMatches =
-      (matchedBank.tx.targetId?.trim() ?? '').toLowerCase() === exp.expId.trim().toLowerCase();
-    evaluateLinkedPair(
-      matchedBank,
-      exp,
-      bk,
-      ek,
-      targetMatches ? 'Linked pair' : 'Recon Source_ID linked · Backfill Target ID'
-    );
-  }
-
-  // Pass 2: Match unlinked Bank Expenses vs unlinked Expense Ledger records by exact amount & date window
-  const unlinkedBank = validBankExpenses.filter(
-    (b) => !usedBankKeys.has(bankKey(b)) && !(b.tx.targetId?.trim())
-  );
-  const unlinkedExpenses = validExpenses.filter(
-    (e) => !usedExpKeys.has(expKey(e)) && !e.reconSourceId.trim()
-  );
-
-  // Index unlinked expenses by exact cents for fast matching
-  const expensesByCents = new Map<number, ExpenseRecord[]>();
-  for (const exp of unlinkedExpenses) {
-    const cents = Math.round(Math.abs(exp.amount) * 100);
-    const arr = expensesByCents.get(cents) ?? [];
+  // Index eligible expenses by remaining cents for fast lookup
+  const expensesByRemainingCents = new Map<number, ExpenseRecord[]>();
+  for (const exp of eligibleExpenses) {
+    const summary = expAllocMap.get(expenseRecordKey(exp));
+    if (!summary) continue;
+    const cents = summary.remainingCents;
+    const arr = expensesByRemainingCents.get(cents) ?? [];
     arr.push(exp);
-    expensesByCents.set(cents, arr);
+    expensesByRemainingCents.set(cents, arr);
   }
 
   interface ScoredPair {
@@ -339,19 +363,40 @@ export function findExpenseMatches(
     dateDiffDays: number;
     score: number;
     reason: string;
+    matchedCents: number;
   }
 
   const candidatePairs: ScoredPair[] = [];
 
-  for (const bankEntry of unlinkedBank) {
-    const bankCents = Math.abs(bankEntry.tx.amountCents);
-    const sameAmountExps = expensesByCents.get(bankCents);
-    if (!sameAmountExps || sameAmountExps.length === 0) continue;
+  for (const bankEntry of eligibleBank) {
+    const bankSummary = bankAllocMap.get(bankEntryKey(bankEntry));
+    if (!bankSummary) continue;
+    const bankRemCents = bankSummary.remainingCents;
+
+    // Allow +/- 1 cent lookup for rounding tolerance
+    const candidateExps: ExpenseRecord[] = [];
+    for (
+      let delta = -RECON_PENNY_TOLERANCE_CENTS;
+      delta <= RECON_PENNY_TOLERANCE_CENTS;
+      delta++
+    ) {
+      const bucket = expensesByRemainingCents.get(bankRemCents + delta);
+      if (bucket) {
+        for (const exp of bucket) {
+          candidateExps.push(exp);
+        }
+      }
+    }
+    if (candidateExps.length === 0) continue;
 
     const bankDays = parseIsoDateToUtcDays(bankEntry.tx.date);
     const ignoreDate = dateToleranceDays === null;
 
-    for (const exp of sameAmountExps) {
+    for (const exp of candidateExps) {
+      const bk = bankEntryKey(bankEntry);
+      const ek = expenseRecordKey(exp);
+      if (seenMatchKeys.has(`${bk}<->${ek}`)) continue;
+
       let dateDiffDays = 0;
       const expDays = bankDays !== null ? parseIsoDateToUtcDays(exp.date) : null;
 
@@ -363,36 +408,78 @@ export function findExpenseMatches(
 
       if (dateToleranceDays !== null && dateDiffDays > dateToleranceDays) continue;
 
-      const { score, reason } = scoreCandidate(bankEntry, exp, dateDiffDays, ignoreDate);
+      const expSummary = expAllocMap.get(ek);
+      const isRemainingMatch =
+        bankSummary.links.length > 0 || (expSummary?.links.length ?? 0) > 0;
+      const { score, reason } = scoreCandidate(
+        bankEntry,
+        exp,
+        dateDiffDays,
+        ignoreDate,
+        isRemainingMatch
+      );
       candidatePairs.push({
         bankEntry,
         expense: exp,
         dateDiffDays,
         score,
         reason,
+        matchedCents: bankRemCents,
       });
     }
   }
 
-  // Sort best matches first for greedy 1-to-1 assignment
+  // Sort best matches first for greedy 1-to-1 assignment on remaining balances
   candidatePairs.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     if (a.dateDiffDays !== b.dateDiffDays) return a.dateDiffDays - b.dateDiffDays;
     return b.bankEntry.tx.date.localeCompare(a.bankEntry.tx.date);
   });
 
+  const claimedBankKeys = new Set<string>();
+  const claimedExpKeys = new Set<string>();
+
   for (const pair of candidatePairs) {
-    const bk = bankKey(pair.bankEntry);
-    const ek = expKey(pair.expense);
-    if (usedBankKeys.has(bk) || usedExpKeys.has(ek)) continue;
+    const bk = bankEntryKey(pair.bankEntry);
+    const ek = expenseRecordKey(pair.expense);
+    if (claimedBankKeys.has(bk) || claimedExpKeys.has(ek)) continue;
 
-    usedBankKeys.add(bk);
-    usedExpKeys.add(ek);
+    const bankSummary = bankAllocMap.get(bk);
+    const expSummary = expAllocMap.get(ek);
+    if (!bankSummary || !expSummary) continue;
 
+    claimedBankKeys.add(bk);
+    claimedExpKeys.add(ek);
+    seenMatchKeys.add(`${bk}<->${ek}`);
+
+    const resultingBankTargetId = formatIdList([
+      ...bankSummary.partnerIds,
+      pair.expense.expId,
+    ]);
     const expCat = pair.expense.category.trim();
+    const combinedCategories = Array.from(
+      new Set(
+        [...bankSummary.distinctCategories, expCat]
+          .map((c) => c.trim())
+          .filter(Boolean)
+      )
+    );
+    const resultingBankCategory =
+      combinedCategories.length === 0
+        ? ''
+        : combinedCategories.length === 1
+          ? combinedCategories[0]
+          : MULTIPLE_CATEGORY_LABEL;
+
     const needsBankCategoryUpdate =
-      Boolean(expCat) && (pair.bankEntry.tx.category ?? '').trim() !== expCat;
+      Boolean(resultingBankCategory) &&
+      (pair.bankEntry.tx.category ?? '').trim() !== resultingBankCategory;
     const needsBankIsReconUpdate = pair.bankEntry.tx.isRecon !== 'Yes';
+
+    const resultingExpenseReconId = formatIdList([
+      ...expSummary.partnerIds,
+      pair.bankEntry.tx.uniqueId,
+    ]);
     const needsExpenseIsReconUpdate = pair.expense.isRecon !== 'Yes';
 
     matches.push({
@@ -410,6 +497,12 @@ export function findExpenseMatches(
       needsExpenseIsReconUpdate,
       needsBankUpdate: true,
       needsExpenseUpdate: true,
+      matchedAmount: fromCents(pair.matchedCents),
+      resultingBankTargetId,
+      resultingBankIsRecon: 'Yes',
+      resultingBankCategory: resultingBankCategory || undefined,
+      resultingExpenseReconId,
+      resultingExpenseIsRecon: 'Yes',
     });
   }
 
@@ -418,18 +511,26 @@ export function findExpenseMatches(
   let unmatchedBankCount = 0;
   let unmatchedBankCents = 0;
   for (const entry of validBankExpenses) {
-    if (!usedBankKeys.has(bankKey(entry))) {
+    const bk = bankEntryKey(entry);
+    if (claimedBankKeys.has(bk)) continue;
+    const summary = bankAllocMap.get(bk);
+    const rem = summary ? summary.remainingCents : Math.abs(entry.tx.amountCents);
+    if (rem > RECON_PENNY_TOLERANCE_CENTS) {
       unmatchedBankCount++;
-      unmatchedBankCents += Math.abs(entry.tx.amountCents);
+      unmatchedBankCents += rem;
     }
   }
 
   let unmatchedExpenseCount = 0;
   let unmatchedExpenseCents = 0;
   for (const exp of validExpenses) {
-    if (!usedExpKeys.has(expKey(exp))) {
+    const ek = expenseRecordKey(exp);
+    if (claimedExpKeys.has(ek)) continue;
+    const summary = expAllocMap.get(ek);
+    const rem = summary ? summary.remainingCents : toCents(Math.abs(exp.amount));
+    if (rem > RECON_PENNY_TOLERANCE_CENTS) {
       unmatchedExpenseCount++;
-      unmatchedExpenseCents += Math.round(Math.abs(exp.amount) * 100);
+      unmatchedExpenseCents += rem;
     }
   }
 
@@ -439,9 +540,9 @@ export function findExpenseMatches(
     alreadyReconciledCount,
     matches,
     unmatchedBankCount,
-    unmatchedBankAmount: unmatchedBankCents / 100,
+    unmatchedBankAmount: fromCents(unmatchedBankCents),
     unmatchedExpenseCount,
-    unmatchedExpenseAmount: unmatchedExpenseCents / 100,
+    unmatchedExpenseAmount: fromCents(unmatchedExpenseCents),
   };
 }
 
@@ -466,7 +567,8 @@ export interface LinkedSyncPlan {
 
 export function findLinkedSyncUpdates(
   bankEntries: BankLedgerEntry[],
-  expenses: ExpenseRecord[]
+  expenses: ExpenseRecord[],
+  reconLinks: ReconLink[] = []
 ): LinkedSyncPlan {
   const sheetBanks = bankEntries.filter(
     ({ tx }) =>
@@ -478,106 +580,21 @@ export function findLinkedSyncUpdates(
     (exp) => typeof exp.sheetRowNumber === 'number' && exp.sheetRowNumber >= 1
   );
 
-  const bankUpdatesByTab: Record<AccountType, LinkedBankFieldPatch[]> = {
-    Puja: [],
-    Regular: [],
-  };
-  const expenseUpdates: LinkedExpenseFieldPatch[] = [];
+  const effectiveLinks = buildEffectiveReconLinks(
+    reconLinks,
+    sheetBanks,
+    sheetExpenses
+  );
 
-  const bankById = new Map<string, BankLedgerEntry[]>();
-  for (const entry of sheetBanks) {
-    const idNorm = entry.tx.uniqueId.trim().toLowerCase();
-    const arr = bankById.get(idNorm) ?? [];
-    arr.push(entry);
-    bankById.set(idNorm, arr);
-  }
-
-  const expById = new Map<string, ExpenseRecord[]>();
-  for (const exp of sheetExpenses) {
-    const idNorm = exp.expId.trim().toLowerCase();
-    const arr = expById.get(idNorm) ?? [];
-    arr.push(exp);
-    expById.set(idNorm, arr);
-  }
-
-  const expKey = (e: ExpenseRecord) => `${e.expId}::${e.sheetRowNumber}`;
-  const bankKey = (b: BankLedgerEntry) => `${b.tab}::${b.tx.uniqueId}::${b.tx.sheetRowNumber}`;
-  const usedBanks = new Set<string>();
-  const usedExps = new Set<string>();
-  let linkedPairCount = 0;
-
-  const inspectPair = (bankEntry: BankLedgerEntry, exp: ExpenseRecord) => {
-    linkedPairCount++;
-    const bankTarget = bankEntry.tx.targetId?.trim() ?? '';
-    const expReconId = exp.reconSourceId.trim();
-
-    const needsBankTarget = bankTarget.toLowerCase() !== exp.expId.trim().toLowerCase();
-    const needsBankIsRecon = bankEntry.tx.isRecon !== 'Yes';
-    const expCat = exp.category.trim();
-    const needsBankCategory =
-      Boolean(expCat) && (bankEntry.tx.category ?? '').trim() !== expCat;
-
-    const needsExpReconId =
-      expReconId.toLowerCase() !== bankEntry.tx.uniqueId.trim().toLowerCase();
-    const needsExpIsRecon = exp.isRecon !== 'Yes';
-
-    if (
-      (needsBankTarget || needsBankIsRecon || needsBankCategory) &&
-      bankEntry.tx.sheetRowNumber
-    ) {
-      const patch: LinkedBankFieldPatch = {
-        sheetRowNumber: bankEntry.tx.sheetRowNumber,
-      };
-      if (needsBankTarget) patch.targetId = exp.expId;
-      if (needsBankIsRecon) patch.isRecon = 'Yes';
-      if (needsBankCategory) patch.category = expCat;
-      bankUpdatesByTab[bankEntry.tab].push(patch);
-    }
-
-    if ((needsExpReconId || needsExpIsRecon) && exp.sheetRowNumber) {
-      const patch: LinkedExpenseFieldPatch = {
-        sheetRowNumber: exp.sheetRowNumber,
-      };
-      if (needsExpReconId) patch.reconSourceId = bankEntry.tx.uniqueId;
-      if (needsExpIsRecon) patch.isRecon = 'Yes';
-      expenseUpdates.push(patch);
-    }
-  };
-
-  for (const entry of sheetBanks) {
-    const bk = bankKey(entry);
-    if (usedBanks.has(bk)) continue;
-    const target = entry.tx.targetId?.trim() ?? '';
-    if (!target) continue;
-
-    const candidates = expById.get(target.toLowerCase()) ?? [];
-    const matchedExp = candidates.find((e) => !usedExps.has(expKey(e)));
-    if (!matchedExp) continue;
-
-    usedBanks.add(bk);
-    usedExps.add(expKey(matchedExp));
-    inspectPair(entry, matchedExp);
-  }
-
-  for (const exp of sheetExpenses) {
-    const ek = expKey(exp);
-    if (usedExps.has(ek)) continue;
-    const recon = exp.reconSourceId.trim();
-    if (!recon) continue;
-
-    const candidates = bankById.get(recon.toLowerCase()) ?? [];
-    const matchedBank = candidates.find((b) => !usedBanks.has(bankKey(b)));
-    if (!matchedBank) continue;
-
-    usedBanks.add(bankKey(matchedBank));
-    usedExps.add(ek);
-    inspectPair(matchedBank, exp);
-  }
+  const { bankUpdatesByTab, expenseUpdates } = computeDerivedLedgerSyncPatches(
+    effectiveLinks,
+    sheetBanks,
+    sheetExpenses
+  );
 
   return {
-    linkedPairCount,
+    linkedPairCount: effectiveLinks.length,
     bankUpdatesByTab,
     expenseUpdates,
   };
 }
-

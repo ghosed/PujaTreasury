@@ -9,8 +9,11 @@ import {
   RotateCcw,
   Trash2,
 } from 'lucide-react';
+import { AllocationSummary } from '../types/reconciliation';
 import { NormalizedTransaction, AccountType } from '../types/statement';
+import { bankEntryKey, MULTIPLE_CATEGORY_LABEL } from '../utils/reconAllocations';
 import { GoogleSignInButton } from './GoogleSignInButton';
+import { ReconLinkCell } from './ReconLinkCell';
 import { TablePagination } from './TablePagination';
 
 interface TransactionGridProps {
@@ -23,6 +26,7 @@ interface TransactionGridProps {
   dateSortOrder: 'desc' | 'asc';
   expenseCategoryOptions: string[];
   incomeCategoryOptions: string[];
+  allocationMap?: Map<string, AllocationSummary>;
   savingRowKey: string | null;
   onSignIn: () => void;
   onToggleDateSort: () => void;
@@ -46,6 +50,7 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
   dateSortOrder,
   expenseCategoryOptions,
   incomeCategoryOptions,
+  allocationMap,
   savingRowKey,
   onSignIn,
   onToggleDateSort,
@@ -216,7 +221,30 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                 >
                   <td className="py-2 pl-3 pr-2 whitespace-nowrap">
                     {(() => {
-                      const isLinkedYes = Boolean(tx.targetId?.trim()) && reconValue === 'Yes';
+                      const alloc = allocationMap?.get(bankEntryKey({ tab: account, tx }));
+                      const isPartialLink = alloc?.status === 'partial';
+                      const isFullLink =
+                        alloc?.status === 'full' ||
+                        (!alloc?.links.length &&
+                          Boolean(tx.targetId?.trim()) &&
+                          reconValue === 'Yes');
+                      const isReconLocked = isFullLink || isPartialLink;
+                      const reconLockTitle = isDiscarded
+                        ? 'Undo discard to edit'
+                        : isPartialLink && alloc
+                          ? `Partially linked (${alloc.allocatedAmount.toLocaleString('en-US', {
+                              style: 'currency',
+                              currency: 'USD',
+                            })} / ${alloc.totalAmount.toLocaleString('en-US', {
+                              style: 'currency',
+                              currency: 'USD',
+                            })}) — allocate remaining ${alloc.remainingAmount.toLocaleString(
+                              'en-US',
+                              { style: 'currency', currency: 'USD' }
+                            )} to mark Yes`
+                          : isFullLink
+                            ? 'Locked to Yes while fully linked to Expense_Ledger'
+                            : `Set Is_Recon for ${tx.uniqueId}`;
                       return (
                         <div className="space-y-1">
                           <div>
@@ -241,19 +269,17 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                                   isRecon: e.target.value === 'Yes' ? 'Yes' : 'No',
                                 })
                               }
-                              disabled={isDiscarded || savingRowKey === tx.rowKey || isLinkedYes}
-                              aria-label={`Is_Recon for ${tx.uniqueId}`}
-                              title={
-                                isDiscarded
-                                  ? 'Undo discard to edit'
-                                  : isLinkedYes
-                                    ? 'Locked to Yes while linked to Expense_Ledger'
-                                    : `Set Is_Recon for ${tx.uniqueId}`
+                              disabled={
+                                isDiscarded || savingRowKey === tx.rowKey || isReconLocked
                               }
+                              aria-label={`Is_Recon for ${tx.uniqueId}`}
+                              title={reconLockTitle}
                               className={`rounded border bg-white px-1.5 py-0.5 text-[11px] font-medium focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
                                 reconValue === 'Yes'
                                   ? 'border-emerald-300 text-emerald-800'
-                                  : 'border-slate-300 text-slate-700'
+                                  : isPartialLink
+                                    ? 'border-amber-300 text-amber-800'
+                                    : 'border-slate-300 text-slate-700'
                               }`}
                             >
                               <option value="No">No</option>
@@ -403,20 +429,21 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                     </div>
                   </td>
                   <td className="px-2 py-2 font-mono text-[11px] whitespace-nowrap tabular-nums">
-                    {tx.targetId ? (
-                      <span
-                        className="font-medium text-teal-700"
-                        title={`Linked Expense Exp_ID: ${tx.targetId}`}
-                      >
-                        {tx.targetId}
-                      </span>
-                    ) : (
-                      <span className="text-slate-400">—</span>
-                    )}
+                    <ReconLinkCell
+                      summary={allocationMap?.get(bankEntryKey({ tab: account, tx }))}
+                      fallbackId={tx.targetId}
+                      partnerLabel="Exp_ID"
+                      linkDirection="to-target"
+                    />
                   </td>
                   <td className="px-2 py-2 whitespace-nowrap">
                     {(() => {
-                      const currentCat = (tx.category ?? '').trim();
+                      const alloc = allocationMap?.get(bankEntryKey({ tab: account, tx }));
+                      const isMultipleFromLinks =
+                        alloc?.derivedCategory === MULTIPLE_CATEGORY_LABEL;
+                      const currentCat = isMultipleFromLinks
+                        ? MULTIPLE_CATEGORY_LABEL
+                        : (tx.category ?? '').trim();
                       const typeOptions =
                         tx.transactionType === 'Income'
                           ? incomeCategoryOptions
@@ -434,8 +461,17 @@ export const TransactionGrid: React.FC<TransactionGridProps> = ({
                           onChange={(e) =>
                             onUpdateInlineField(tx, { category: e.target.value })
                           }
-                          disabled={isDiscarded || savingRowKey === tx.rowKey}
+                          disabled={
+                            isDiscarded ||
+                            savingRowKey === tx.rowKey ||
+                            isMultipleFromLinks
+                          }
                           aria-label={`Category for ${tx.uniqueId}`}
+                          title={
+                            isMultipleFromLinks
+                              ? 'Spans multiple categories via Recon_Links'
+                              : `Category for ${tx.uniqueId}`
+                          }
                           className="w-[140px] rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-800 focus:border-teal-700 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <option value="">—</option>

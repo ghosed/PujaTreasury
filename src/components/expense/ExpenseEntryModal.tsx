@@ -15,6 +15,7 @@ import { generateManualExpenseId, getSubCategoryOptions } from '../../utils/expe
 import {
   bankEntryKey,
   fromCents,
+  parseExactAmountQueryCents,
   RECON_PENNY_TOLERANCE_CENTS,
   reconPairKey,
   toCents,
@@ -215,6 +216,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       )
     );
     const q = bankSearch.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(bankSearch);
 
     return allBankEntries
       .filter((entry) => {
@@ -234,6 +236,12 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
         if (rem <= RECON_PENNY_TOLERANCE_CENTS) return false;
 
         if (!q) return true;
+        const fullCents = Math.abs(entry.tx.amountCents);
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (rem === queryAmountCents || fullCents === queryAmountCents);
+        if (matchesExactAmount) return true;
+
         const hay =
           `${entry.tab} ${entry.tx.uniqueId} ${entry.tx.date} ${entry.tx.description} ${entry.tx.source} ${entry.tx.referenceNumber} ${entry.tx.notes ?? ''}`.toLowerCase();
         return hay.includes(q);
@@ -243,6 +251,19 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
         const aRem = aSummary ? aSummary.remainingCents : Math.abs(a.tx.amountCents);
         const bSummary = bankAllocMap?.get(bankEntryKey(b));
         const bRem = bSummary ? bSummary.remainingCents : Math.abs(b.tx.amountCents);
+
+        if (queryAmountCents !== null) {
+          const aQueryMatch =
+            aRem === queryAmountCents || Math.abs(a.tx.amountCents) === queryAmountCents
+              ? 1
+              : 0;
+          const bQueryMatch =
+            bRem === queryAmountCents || Math.abs(b.tx.amountCents) === queryAmountCents
+              ? 1
+              : 0;
+          if (bQueryMatch !== aQueryMatch) return bQueryMatch - aQueryMatch;
+        }
+
         const aExact = Math.abs(aRem - expRemainingCents) <= 1 ? 1 : 0;
         const bExact = Math.abs(bRem - expRemainingCents) <= 1 ? 1 : 0;
         if (bExact !== aExact) return bExact - aExact;
@@ -573,7 +594,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
                       type="search"
                       value={bankSearch}
                       onChange={(e) => setBankSearch(e.target.value)}
-                      placeholder="Search Bank Ledger (Puja & Regular) by ID, description, check#, source..."
+                      placeholder="Search Bank Ledger (Puja & Regular) by ID, exact amount, description, check#, source..."
                       className="w-full rounded border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                     />
                   </div>

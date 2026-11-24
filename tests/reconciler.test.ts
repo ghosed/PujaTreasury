@@ -13,6 +13,7 @@ import {
   fromCents,
   generateLinkId,
   MULTIPLE_CATEGORY_LABEL,
+  parseExactAmountQueryCents,
   toCents,
   validateNewReconLinks,
 } from '../src/utils/reconAllocations';
@@ -931,5 +932,21 @@ test('Phase 3 step-by-step N:1 commits and partial unlink on Example 2', () => {
       isRecon: 'No',
     },
   ]);
+});
+
+test('parseExactAmountQueryCents parses exact dollar search inputs cleanly', () => {
+  assert.equal(parseExactAmountQueryCents('352'), 35200);
+  assert.equal(parseExactAmountQueryCents('352.00'), 35200);
+  assert.equal(parseExactAmountQueryCents('$352.00'), 35200);
+  assert.equal(parseExactAmountQueryCents('1,851.43'), 185143);
+  assert.equal(parseExactAmountQueryCents('$1,851.43'), 185143);
+  assert.equal(parseExactAmountQueryCents('1851.43'), 185143);
+  assert.equal(parseExactAmountQueryCents('-$516.42'), 51642);
+  assert.equal(parseExactAmountQueryCents('.50'), 50);
+  assert.equal(parseExactAmountQueryCents('$.50'), 50);
+  assert.equal(parseExactAmountQueryCents(''), null);
+  assert.equal(parseExactAmountQueryCents('2026-11-09'), null);
+  assert.equal(parseExactAmountQueryCents('Food'), null);
+  assert.equal(parseExactAmountQueryCents('Chicken = $240'), null);
 });
 

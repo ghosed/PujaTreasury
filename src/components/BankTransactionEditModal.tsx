@@ -16,6 +16,7 @@ import {
   expenseRecordKey,
   fromCents,
   MULTIPLE_CATEGORY_LABEL,
+  parseExactAmountQueryCents,
   RECON_PENNY_TOLERANCE_CENTS,
   reconPairKey,
   toCents,
@@ -163,6 +164,7 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
       )
     );
     const q = expSearch.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(expSearch);
 
     return allExpenseRecords
       .filter((exp) => {
@@ -175,16 +177,35 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
         if (rem <= RECON_PENNY_TOLERANCE_CENTS) return false;
 
         if (!q) return true;
+        const fullCents = toCents(Math.abs(exp.amount));
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (rem === queryAmountCents || fullCents === queryAmountCents);
+        if (matchesExactAmount) return true;
+
         const hay =
           `${exp.expId} ${exp.date} ${exp.category} ${exp.subCategory} ${exp.description}`.toLowerCase();
         return hay.includes(q);
       })
       .sort((a, b) => {
-        // Prioritize exact remaining match, then same date, then newest date
+        // Prioritize exact searched amount match, then exact bank remaining match, then same date, then newest date
         const aSummary = expenseAllocMap?.get(expenseRecordKey(a));
         const aRem = aSummary ? aSummary.remainingCents : toCents(Math.abs(a.amount));
         const bSummary = expenseAllocMap?.get(expenseRecordKey(b));
         const bRem = bSummary ? bSummary.remainingCents : toCents(Math.abs(b.amount));
+
+        if (queryAmountCents !== null) {
+          const aQueryMatch =
+            aRem === queryAmountCents || toCents(Math.abs(a.amount)) === queryAmountCents
+              ? 1
+              : 0;
+          const bQueryMatch =
+            bRem === queryAmountCents || toCents(Math.abs(b.amount)) === queryAmountCents
+              ? 1
+              : 0;
+          if (bQueryMatch !== aQueryMatch) return bQueryMatch - aQueryMatch;
+        }
+
         const aExact = Math.abs(aRem - bankRemainingCents) <= 1 ? 1 : 0;
         const bExact = Math.abs(bRem - bankRemainingCents) <= 1 ? 1 : 0;
         if (bExact !== aExact) return bExact - aExact;
@@ -501,7 +522,7 @@ export const BankTransactionEditModal: React.FC<BankTransactionEditModalProps> =
                       type="search"
                       value={expSearch}
                       onChange={(e) => setExpSearch(e.target.value)}
-                      placeholder="Search Expense_Ledger by Exp_ID, description, category, date..."
+                      placeholder="Search Expense_Ledger by Exp_ID, exact amount, description, category, date..."
                       className="w-full rounded border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                     />
                   </div>

@@ -85,6 +85,7 @@ import {
   computeBankAllocationMap,
   computeExpenseAllocationMap,
   MULTIPLE_CATEGORY_LABEL,
+  parseExactAmountQueryCents,
 } from './utils/reconAllocations';
 import { BankLedgerEntry, findLinkedSyncUpdates } from './utils/reconciler';
 
@@ -1498,6 +1499,7 @@ export default function App() {
 
   const filteredTransactions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
     const matched = transactions.filter((tx) => {
       if (statusFilter === 'ready') {
         const eligible = tx.reviewStatus === 'ok' || tx.reviewStatus === 'kept-distinct';
@@ -1558,9 +1560,16 @@ export default function App() {
         return false;
       }
       if (q) {
-        const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+        const alloc = bankAllocMap.get(bankEntryKey({ tab: account, tx }));
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (Math.abs(tx.amountCents) === queryAmountCents ||
+            (alloc ? alloc.remainingCents === queryAmountCents : false));
+        if (!matchesExactAmount) {
+          const hay =
+            `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
       }
       return true;
     });
@@ -1662,6 +1671,7 @@ export default function App() {
 
   const { sourceSummaryMap, extraSources, activeSourceCount } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
     const rawMap = new Map<
       string,
       {
@@ -1690,9 +1700,13 @@ export default function App() {
       if (startDate && tx.date < startDate) continue;
       if (endDate && tx.date > endDate) continue;
       if (q) {
-        const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
-        if (!hay.includes(q)) continue;
+        const matchesExactAmount =
+          queryAmountCents !== null && Math.abs(tx.amountCents) === queryAmountCents;
+        if (!matchesExactAmount) {
+          const hay =
+            `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
       }
 
       const entry = rawMap.get(tx.source) ?? {
@@ -1747,6 +1761,7 @@ export default function App() {
 
   const unreconExpenseSummary = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
     const bySource = new Map<string, { source: string; count: number; totalCents: number }>();
     const unreconTransactions: NormalizedTransaction[] = [];
     let totalCount = 0;
@@ -1772,9 +1787,16 @@ export default function App() {
       if (startDate && tx.date < startDate) continue;
       if (endDate && tx.date > endDate) continue;
       if (q) {
-        const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
-        if (!hay.includes(q)) continue;
+        const allocForSearch = bankAllocMap.get(bankEntryKey({ tab: account, tx }));
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (Math.abs(tx.amountCents) === queryAmountCents ||
+            (allocForSearch ? allocForSearch.remainingCents === queryAmountCents : false));
+        if (!matchesExactAmount) {
+          const hay =
+            `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
       }
 
       const absCents = Math.abs(tx.amountCents);
@@ -1838,6 +1860,7 @@ export default function App() {
 
   const unreconIncomeSummary = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
     const bySource = new Map<string, { source: string; count: number; totalCents: number }>();
     const unreconTransactions: NormalizedTransaction[] = [];
     let totalCount = 0;
@@ -1863,9 +1886,13 @@ export default function App() {
       if (startDate && tx.date < startDate) continue;
       if (endDate && tx.date > endDate) continue;
       if (q) {
-        const hay =
-          `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
-        if (!hay.includes(q)) continue;
+        const matchesExactAmount =
+          queryAmountCents !== null && Math.abs(tx.amountCents) === queryAmountCents;
+        if (!matchesExactAmount) {
+          const hay =
+            `${tx.description} ${tx.referenceNumber} ${tx.uniqueId} ${tx.targetId ?? ''} ${tx.category ?? ''} ${tx.notes ?? ''} ${tx.isRecon ?? ''} ${tx.source} ${tx.date}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
       }
 
       totalAllIncomeCents += tx.amountCents;
@@ -3295,7 +3322,7 @@ export default function App() {
                       type="search"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search description, ref #, ID..."
+                      placeholder="Search description, exact amount, ref #, ID..."
                       className="w-56 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                     />
                   </div>

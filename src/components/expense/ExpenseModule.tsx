@@ -56,6 +56,8 @@ import {
   computeBankAllocationMap,
   computeExpenseAllocationMap,
   expenseRecordKey,
+  parseExactAmountQueryCents,
+  toCents,
 } from '../../utils/reconAllocations';
 import { BankLedgerEntry } from '../../utils/reconciler';
 import { clearCachedToken, getAccessToken } from '../../services/firebaseAuth';
@@ -816,6 +818,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
 
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
     const matched = allRecords.filter((rec) => {
       if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') return false;
       if (originFilter === 'staged' && rec.sourceOrigin !== 'csv') return false;
@@ -853,9 +856,16 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       if (startDate && rec.date < startDate) return false;
       if (endDate && rec.date > endDate) return false;
       if (q) {
-        const hay =
-          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+        const alloc = expAllocMap.get(expenseRecordKey(rec));
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (toCents(Math.abs(rec.amount)) === queryAmountCents ||
+            (alloc ? alloc.remainingCents === queryAmountCents : false));
+        if (!matchesExactAmount) {
+          const hay =
+            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
       }
       return true;
     });
@@ -939,6 +949,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   const categorySummaries = useMemo(() => {
     const map = new Map<string, { category: string; count: number; totalCents: number }>();
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
 
     for (const rec of allRecords) {
       if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') continue;
@@ -956,9 +967,16 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       if (startDate && rec.date < startDate) continue;
       if (endDate && rec.date > endDate) continue;
       if (q) {
-        const hay =
-          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
-        if (!hay.includes(q)) continue;
+        const alloc = expAllocMap.get(expenseRecordKey(rec));
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (toCents(Math.abs(rec.amount)) === queryAmountCents ||
+            (alloc ? alloc.remainingCents === queryAmountCents : false));
+        if (!matchesExactAmount) {
+          const hay =
+            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
       }
 
       const cat = rec.category || 'Uncategorized';
@@ -977,6 +995,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       .sort((a, b) => b.total - a.total);
   }, [
     allRecords,
+    expAllocMap,
     originFilter,
     statusFilter,
     pujaFilter,
@@ -990,6 +1009,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     const map = new Map<string, { category: string; count: number; totalCents: number }>();
     const unreconRecords: ExpenseRecord[] = [];
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
     let totalCount = 0;
     let totalCents = 0;
 
@@ -1009,14 +1029,21 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
       }
       if (startDate && rec.date < startDate) continue;
       if (endDate && rec.date > endDate) continue;
-      if (q) {
-        const hay =
-          `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
-        if (!hay.includes(q)) continue;
-      }
 
       const fullCents = Math.round(rec.amount * 100);
       const alloc = expAllocMap.get(expenseRecordKey(rec));
+      if (q) {
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          (toCents(Math.abs(rec.amount)) === queryAmountCents ||
+            (alloc ? alloc.remainingCents === queryAmountCents : false));
+        if (!matchesExactAmount) {
+          const hay =
+            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
+          if (!hay.includes(q)) continue;
+        }
+      }
+
       const remCents =
         alloc && alloc.links.length > 0 ? alloc.remainingCents : fullCents;
       const cat = rec.category || 'Uncategorized';
@@ -1963,7 +1990,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search Exp_ID, description..."
+                    placeholder="Search Exp_ID, exact amount, description..."
                     className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                   />
                 </div>

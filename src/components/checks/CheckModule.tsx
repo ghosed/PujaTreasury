@@ -33,6 +33,7 @@ import {
   processScannedCheckFiles,
 } from '../../utils/checkProcessor';
 import { categorizeChecksHybrid } from '../../utils/checkCategorizer';
+import { parseExactAmountQueryCents, toCents } from '../../utils/reconAllocations';
 import {
   batchUpdateCheckCategories,
   batchUpdateCheckUniqueIds,
@@ -557,6 +558,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
 
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(searchQuery);
 
     const filtered = combinedRecords.filter((rec) => {
       if (originFilter === 'sheet' && rec.sourceOrigin !== 'sheet') return false;
@@ -580,8 +582,13 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
       if (endDate && (!rec.date || rec.date > endDate)) return false;
 
       if (q) {
-        const hay = `${rec.uniqueId} ${rec.checkNumber} ${rec.routingNumber} ${rec.bank} ${rec.paidTo} ${rec.paidBy} ${rec.memo} ${rec.category ?? ''} ${rec.transactionType}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+        const matchesExactAmount =
+          queryAmountCents !== null &&
+          toCents(Math.abs(rec.amount)) === queryAmountCents;
+        if (!matchesExactAmount) {
+          const hay = `${rec.uniqueId} ${rec.checkNumber} ${rec.routingNumber} ${rec.bank} ${rec.paidTo} ${rec.paidBy} ${rec.memo} ${rec.category ?? ''} ${rec.transactionType}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
       }
 
       return true;
@@ -1687,7 +1694,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search check #, bank, paid to, paid by, category, memo, Unique ID..."
+                  placeholder="Search check #, exact amount, bank, paid to, paid by, category, memo, Unique ID..."
                   className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
                 />
               </div>

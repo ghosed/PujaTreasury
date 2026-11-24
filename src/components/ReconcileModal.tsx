@@ -39,6 +39,7 @@ import {
   computeExpenseAllocationMap,
   expenseRecordKey,
   fromCents,
+  parseExactAmountQueryCents,
   RECON_PENNY_TOLERANCE_CENTS,
   reconPairKey,
   toCents,
@@ -264,6 +265,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
   // Eligible items for Multi-Link Workbench
   const workbenchBanks = useMemo(() => {
     const q = bankSearch.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(bankSearch);
     return scopedBankEntries
       .filter((entry) => {
         if (
@@ -278,16 +280,43 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         const rem = summary ? summary.remainingCents : Math.abs(entry.tx.amountCents);
         if (rem <= RECON_PENNY_TOLERANCE_CENTS) return false;
         if (!q) return true;
+        const fullCents = Math.abs(entry.tx.amountCents);
+        if (
+          queryAmountCents !== null &&
+          (rem === queryAmountCents || fullCents === queryAmountCents)
+        ) {
+          return true;
+        }
         const hay =
           `${entry.tab} ${entry.tx.uniqueId} ${entry.tx.date} ${entry.tx.description} ${entry.tx.source} ${entry.tx.referenceNumber} ${entry.tx.notes ?? ''}`.toLowerCase();
         return hay.includes(q);
       })
-      .sort((a, b) => b.tx.date.localeCompare(a.tx.date));
+      .sort((a, b) => {
+        if (queryAmountCents !== null) {
+          const aRem =
+            bankAllocMap.get(bankEntryKey(a))?.remainingCents ??
+            Math.abs(a.tx.amountCents);
+          const bRem =
+            bankAllocMap.get(bankEntryKey(b))?.remainingCents ??
+            Math.abs(b.tx.amountCents);
+          const aMatch =
+            aRem === queryAmountCents || Math.abs(a.tx.amountCents) === queryAmountCents
+              ? 1
+              : 0;
+          const bMatch =
+            bRem === queryAmountCents || Math.abs(b.tx.amountCents) === queryAmountCents
+              ? 1
+              : 0;
+          if (bMatch !== aMatch) return bMatch - aMatch;
+        }
+        return b.tx.date.localeCompare(a.tx.date);
+      });
   }, [scopedBankEntries, bankAllocMap, bankSearch]);
 
   const workbenchExpenses = useMemo(() => {
     if (!expenseWorkspace) return [];
     const q = expenseSearch.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(expenseSearch);
     return expenseWorkspace.records
       .filter((exp) => {
         if (typeof exp.sheetRowNumber !== 'number' || exp.sheetRowNumber < 1) {
@@ -297,11 +326,37 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         const rem = summary ? summary.remainingCents : toCents(Math.abs(exp.amount));
         if (rem <= RECON_PENNY_TOLERANCE_CENTS) return false;
         if (!q) return true;
+        const fullCents = toCents(Math.abs(exp.amount));
+        if (
+          queryAmountCents !== null &&
+          (rem === queryAmountCents || fullCents === queryAmountCents)
+        ) {
+          return true;
+        }
         const hay =
           `${exp.expId} ${exp.date} ${exp.category} ${exp.subCategory} ${exp.description} ${exp.puja} ${exp.paymentMode}`.toLowerCase();
         return hay.includes(q);
       })
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort((a, b) => {
+        if (queryAmountCents !== null) {
+          const aRem =
+            expAllocMap.get(expenseRecordKey(a))?.remainingCents ??
+            toCents(Math.abs(a.amount));
+          const bRem =
+            expAllocMap.get(expenseRecordKey(b))?.remainingCents ??
+            toCents(Math.abs(b.amount));
+          const aMatch =
+            aRem === queryAmountCents || toCents(Math.abs(a.amount)) === queryAmountCents
+              ? 1
+              : 0;
+          const bMatch =
+            bRem === queryAmountCents || toCents(Math.abs(b.amount)) === queryAmountCents
+              ? 1
+              : 0;
+          if (bMatch !== aMatch) return bMatch - aMatch;
+        }
+        return b.date.localeCompare(a.date);
+      });
   }, [expenseWorkspace, expAllocMap, expenseSearch]);
 
   const regenerateFifoProposals = useCallback(
@@ -1145,7 +1200,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
                         type="search"
                         value={bankSearch}
                         onChange={(e) => setBankSearch(e.target.value)}
-                        placeholder="Search Bank Unique ID, description, source, ref#..."
+                        placeholder="Search Bank Unique ID, exact amount, description, source, ref#..."
                         className="w-full rounded border border-slate-300 bg-white py-1.5 pr-2.5 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                       />
                     </div>
@@ -1235,7 +1290,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
                         type="search"
                         value={expenseSearch}
                         onChange={(e) => setExpenseSearch(e.target.value)}
-                        placeholder="Search Exp_ID, category, description, payment mode..."
+                        placeholder="Search Exp_ID, exact amount, category, description, payment mode..."
                         className="w-full rounded border border-slate-300 bg-white py-1.5 pr-2.5 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                       />
                     </div>

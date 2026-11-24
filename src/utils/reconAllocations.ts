@@ -26,6 +26,27 @@ export function fromCents(cents: number): number {
   return Math.round(cents) / 100;
 }
 
+/**
+ * Parses a search query representing an exact dollar amount (e.g. "352",
+ * "352.00", "$1,851.43", "-$516.42", ".50") into positive cents, or returns
+ * null if the query is not a pure numeric/currency amount.
+ */
+export function parseExactAmountQueryCents(rawQuery: string): number | null {
+  const trimmed = rawQuery.trim();
+  if (!trimmed) return null;
+  if (
+    !/^[+-]?\$?\s*(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?|\.\d{1,2})$/.test(
+      trimmed
+    )
+  ) {
+    return null;
+  }
+  const numericStr = trimmed.replace(/[$,\s]/g, '');
+  const parsed = Number(numericStr);
+  if (!Number.isFinite(parsed)) return null;
+  return toCents(Math.abs(parsed));
+}
+
 export function parseIdList(raw: string | undefined | null): string[] {
   if (!raw) return [];
   const parts = String(raw)

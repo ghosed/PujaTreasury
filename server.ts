@@ -3,9 +3,12 @@ import express from 'express';
 import path from 'path';
 import type { ChatApiRequest } from './src/types/chatbot.ts';
 import type { CheckCategorizeRequest } from './src/types/check.ts';
+import type { AmazonCategorizeRequest } from './src/types/amazon.ts';
 import { formatGeminiError, handleChatRequest } from './server/geminiChat.ts';
 import { type CheckScanRequest, scanCheckDocument } from './server/checkScanner.ts';
 import { categorizeChecksWithGemini } from './server/checkCategorizer.ts';
+import { type AmazonScanRequest, scanAmazonDocument } from './server/amazonScanner.ts';
+import { categorizeAmazonWithGemini } from './server/amazonCategorizer.ts';
 
 async function startServer() {
   const app = express();
@@ -77,6 +80,55 @@ async function startServer() {
           ? body.expenseCategories
           : [],
         incomeCategories: Array.isArray(body.incomeCategories) ? body.incomeCategories : [],
+        historicalExamples: Array.isArray(body.historicalExamples)
+          ? body.historicalExamples
+          : [],
+      });
+
+      res.json(result);
+    } catch (err) {
+      const { status, message } = formatGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/amazon/scan', async (req, res) => {
+    try {
+      const body = req.body as Partial<AmazonScanRequest> | undefined;
+      if (!body || typeof body.base64Data !== 'string' || !body.base64Data.trim()) {
+        res.status(400).json({ error: 'Amazon order image or PDF file content is required.' });
+        return;
+      }
+
+      const result = await scanAmazonDocument({
+        fileName:
+          typeof body.fileName === 'string' && body.fileName.trim()
+            ? body.fileName.trim()
+            : 'amazon-order-upload',
+        mimeType: typeof body.mimeType === 'string' ? body.mimeType : '',
+        base64Data: body.base64Data,
+      });
+
+      res.json(result);
+    } catch (err) {
+      const { status, message } = formatGeminiError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.post('/api/amazon/categorize', async (req, res) => {
+    try {
+      const body = req.body as Partial<AmazonCategorizeRequest> | undefined;
+      if (!body || !Array.isArray(body.items)) {
+        res.status(400).json({ error: 'An array of Amazon order items to categorize is required.' });
+        return;
+      }
+
+      const result = await categorizeAmazonWithGemini({
+        items: body.items,
+        expenseCategories: Array.isArray(body.expenseCategories)
+          ? body.expenseCategories
+          : [],
         historicalExamples: Array.isArray(body.historicalExamples)
           ? body.historicalExamples
           : [],

@@ -65,6 +65,7 @@ import { ReconcileCompleteSummary, ReconcileModal } from './components/Reconcile
 import { ExpenseModule } from './components/expense/ExpenseModule';
 import { ChatbotModule } from './components/chatbot/ChatbotModule';
 import { CheckModule } from './components/checks/CheckModule';
+import { AmazonModule } from './components/amazon/AmazonModule';
 import { ExpenseRecord } from './types/expense';
 import {
   batchUpdateExpenseReconIds,
@@ -89,7 +90,7 @@ import {
 } from './utils/reconAllocations';
 import { BankLedgerEntry, findLinkedSyncUpdates } from './utils/reconciler';
 
-type ActiveModule = 'statements' | 'expenses' | 'checks' | 'chatbot';
+type ActiveModule = 'statements' | 'expenses' | 'checks' | 'amazon' | 'chatbot';
 type StatusFilter = 'all' | 'ready' | 'review' | 'discarded' | 'in-sheet';
 type TypeFilter = 'all' | 'Income' | 'Expense';
 type LinkFilter =
@@ -2006,6 +2007,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveModule('amazon')}
+            className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
+              activeModule === 'amazon'
+                ? 'text-slate-900 underline underline-offset-4'
+                : ''
+            }`}
+          >
+            Amazon Ledger
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveModule('chatbot')}
             className={`transition-colors whitespace-nowrap shrink-0 hover:text-slate-900 ${
               activeModule === 'chatbot'
@@ -2062,6 +2074,13 @@ export default function App() {
           onSignIn={handleSignIn}
           onAuthExpired={() => setNeedsAuth(true)}
           onCheckRecordsChange={setCheckLedgerRecords}
+        />
+      ) : activeModule === 'amazon' ? (
+        <AmazonModule
+          needsAuth={needsAuth}
+          isLoggingIn={isLoggingIn}
+          onSignIn={handleSignIn}
+          onAuthExpired={() => setNeedsAuth(true)}
         />
       ) : activeModule === 'chatbot' ? (
         <ChatbotModule

@@ -248,8 +248,8 @@ For EACH line item, extract these 9 fields accurately. IMPORTANT: If a field is 
                   },
                   status: {
                     type: Type.STRING,
-                    enum: ['Ordered', 'Delivered', 'Cancelled', 'Returned', ''],
-                    description: 'Normalized order status, or "" if not shown.',
+                    description:
+                      'Normalized order status: "Ordered", "Delivered", "Cancelled", "Returned", or "" if not shown.',
                   },
                 },
                 required: [

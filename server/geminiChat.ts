@@ -189,10 +189,16 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
       message: 'Gemini API permission denied. Please verify GEMINI_API_KEY in Settings > Secrets.',
     };
   }
-  if (rawMessage.includes('400') || rawMessage.includes('API_KEY_INVALID')) {
+  if (rawMessage.includes('API_KEY_INVALID') || rawMessage.toLowerCase().includes('api key not valid')) {
     return {
       status: 400,
-      message: 'Gemini API request or API key is invalid. Check Settings > Secrets.',
+      message: 'Gemini API key is invalid. Check Settings > Secrets.',
+    };
+  }
+  if (rawMessage.includes('400') || rawMessage.includes('INVALID_ARGUMENT')) {
+    return {
+      status: 400,
+      message: `Gemini API rejected the request: ${rawMessage}`,
     };
   }
   if (rawMessage.includes('429') || rawMessage.includes('RESOURCE_EXHAUSTED')) {

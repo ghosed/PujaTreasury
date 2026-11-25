@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, FileUp, Pencil, Plus } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, FileUp, Pencil, Plus, Trash2 } from 'lucide-react';
 import { AmazonOrderRecord, AmazonOrderStatus } from '../../types/amazon';
 import { ExpenseRecord } from '../../types/expense';
 import { BankLedgerLookupRecord } from './AmazonEntryModal';
@@ -22,9 +22,11 @@ interface AmazonGridProps {
   bankByIdMap?: Map<string, BankLedgerLookupRecord>;
   updatingReconKey: string | null;
   updatingCategoryKey: string | null;
+  isDeletingRecords?: boolean;
   onSignIn: () => void;
   onToggleSort: (field: AmazonSortField) => void;
   onEditRecord: (record: AmazonOrderRecord) => void;
+  onDeleteRecord: (record: AmazonOrderRecord) => void;
   onUpdateIsRecon: (record: AmazonOrderRecord, isRecon: 'Yes' | 'No') => void;
   onUpdateCategory: (record: AmazonOrderRecord, category: string) => void;
   onTriggerUpload: () => void;
@@ -60,9 +62,11 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
   bankByIdMap,
   updatingReconKey,
   updatingCategoryKey,
+  isDeletingRecords = false,
   onSignIn,
   onToggleSort,
   onEditRecord,
+  onDeleteRecord,
   onUpdateIsRecon,
   onUpdateCategory,
   onTriggerUpload,
@@ -265,7 +269,7 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
                 >
                   <td className="py-2 pl-3 pr-2 whitespace-nowrap">
                     <div className="space-y-1">
-                      <div>
+                      <div className="flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => onEditRecord(rec)}
@@ -279,6 +283,20 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
                           className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 hover:text-teal-800 disabled:cursor-not-allowed disabled:opacity-40"
                         >
                           <Pencil className="h-3 w-3" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteRecord(rec)}
+                          disabled={isDeletingRecords}
+                          aria-label={`Delete ${rec.uniqueId}`}
+                          title={
+                            rec.sourceOrigin === 'sheet'
+                              ? `Delete ${rec.uniqueId} from Amazon_Ledger`
+                              : `Remove ${rec.uniqueId} from scan queue`
+                          }
+                          className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 bg-white text-red-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Trash2 className="h-3 w-3" aria-hidden="true" />
                         </button>
                       </div>
                       <div>

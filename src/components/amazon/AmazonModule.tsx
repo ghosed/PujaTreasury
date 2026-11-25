@@ -39,6 +39,7 @@ import {
   batchUpdateAmazonCategories,
   batchUpdateAmazonUniqueIds,
   CANONICAL_AMAZON_HEADERS,
+  deleteAmazonRows,
   ensureAmazonExtraHeaders,
   executeAmazonSyncPlan,
   fetchAmazonLedger,
@@ -67,6 +68,7 @@ import {
   AmazonCategorizeModal,
   AmazonCategorizeReviewItem,
 } from './AmazonCategorizeModal';
+import { AmazonDeleteConfirmModal } from './AmazonDeleteConfirmModal';
 
 interface AmazonModuleProps {
   needsAuth: boolean;
@@ -170,6 +172,16 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     isOpen: boolean;
     items: AmazonCategorizeReviewItem[];
   }>({ isOpen: false, items: [] });
+  const [deleteConfirmState, setDeleteConfirmState] = useState<{
+    isOpen: boolean;
+    mode: 'single' | 'all';
+    records: AmazonOrderRecord[];
+  }>({
+    isOpen: false,
+    mode: 'single',
+    records: [],
+  });
+  const [isDeletingRecords, setIsDeletingRecords] = useState(false);
 
   // LookUp Categories (Amazon_Ledger LookUp -> Bank_Ledger LookUp -> Expense_Ledger fallback)
   const [amazonLookupCategories, setAmazonLookupCategories] = useState<BankLookUpCategories>({
@@ -1239,6 +1251,155 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     }
   };
 
+  const removeScannedItemsByRowKeys = useCallback(
+    (rowKeysToRemove: Set<string>) => {
+      if (rowKeysToRemove.size === 0) return;
+
+      const keyRemap = new Map<string, string>();
+      const removedFileIds = new Set<string>();
+
+      setUploadedFiles((prev) => {
+        const nextFiles: UploadedAmazonFile[] = [];
+        for (const file of prev) {
+          if (file.status !== 'ready') {
+            nextFiles.push(file);
+            continue;
+          }
+          const keptItems: RawExtractedAmazonItem[] = [];
+          file.extractedItems.forEach((item, oldIdx) => {
+            const oldKey = `scan-${file.id}-${oldIdx}`;
+            if (!rowKeysToRemove.has(oldKey)) {
+              const newIdx = keptItems.length;
+              keyRemap.set(oldKey, `scan-${file.id}-${newIdx}`);
+              keptItems.push(item);
+            }
+          });
+          if (keptItems.length === 0) {
+            removedFileIds.add(file.id);
+          } else {
+            nextFiles.push({
+              ...file,
+              extractedItems: keptItems,
+            });
+          }
+        }
+        return nextFiles;
+      });
+
+      for (const fileId of removedFileIds) {
+        delete rawFileMapRef.current[fileId];
+      }
+
+      setStagedOverrides((prev) => {
+        const next: Record<string, Partial<AmazonOrderRecord>> = {};
+        for (const [oldKey, ov] of Object.entries(prev)) {
+          if (rowKeysToRemove.has(oldKey)) continue;
+          const mappedKey = keyRemap.get(oldKey) ?? oldKey;
+          next[mappedKey] = ov;
+        }
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleRequestDeleteSingle = (rec: AmazonOrderRecord) => {
+    setDeleteConfirmState({
+      isOpen: true,
+      mode: 'single',
+      records: [rec],
+    });
+  };
+
+  const handleRequestDeleteAll = () => {
+    if (filteredRecords.length === 0) return;
+    setDeleteConfirmState({
+      isOpen: true,
+      mode: 'all',
+      records: filteredRecords,
+    });
+  };
+
+  const handleConfirmDelete = async () => {
+    const targets = deleteConfirmState.records;
+    if (targets.length === 0) return;
+
+    const sheetRowNumbers = targets
+      .filter((r) => r.sourceOrigin === 'sheet' && Boolean(r.sheetRowNumber))
+      .map((r) => r.sheetRowNumber as number);
+    const scanRowKeys = new Set(
+      targets.filter((r) => r.sourceOrigin === 'scan').map((r) => r.rowKey)
+    );
+
+    setErrorMessage(null);
+    setStatusMessage(null);
+    setIsDeletingRecords(true);
+
+    try {
+      let deletedSheetCount = 0;
+      let activeToken: string | null = null;
+
+      if (sheetRowNumbers.length > 0) {
+        if (!sheetMeta) {
+          throw new Error('Amazon_Ledger sheet metadata is not loaded yet.');
+        }
+        activeToken = await getAccessToken();
+        if (!activeToken) {
+          onAuthExpired();
+          setIsDeletingRecords(false);
+          return;
+        }
+        deletedSheetCount = await deleteAmazonRows(activeToken, sheetMeta, sheetRowNumbers);
+      }
+
+      if (scanRowKeys.size > 0) {
+        removeScannedItemsByRowKeys(scanRowKeys);
+      }
+
+      setDeleteConfirmState({ isOpen: false, mode: 'single', records: [] });
+
+      if (deletedSheetCount > 0 && activeToken) {
+        await loadAmazonLedger(activeToken);
+      }
+
+      if (deletedSheetCount > 0 && scanRowKeys.size > 0) {
+        setStatusMessage(
+          `Deleted ${deletedSheetCount} ${
+            deletedSheetCount === 1 ? 'record' : 'records'
+          } from Amazon_Ledger and removed ${scanRowKeys.size} scanned ${
+            scanRowKeys.size === 1 ? 'item' : 'items'
+          }.`
+        );
+      } else if (deletedSheetCount > 0) {
+        setStatusMessage(
+          `Deleted ${deletedSheetCount} ${
+            deletedSheetCount === 1 ? 'record' : 'records'
+          } from Amazon_Ledger.`
+        );
+      } else if (scanRowKeys.size > 0) {
+        setStatusMessage(
+          `Removed ${scanRowKeys.size} scanned ${
+            scanRowKeys.size === 1 ? 'item' : 'items'
+          } from the scan queue.`
+        );
+      }
+    } catch (err) {
+      if (err instanceof SheetsApiError && err.status === 401) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to delete record(s) from Amazon_Ledger.'
+        );
+      }
+    } finally {
+      setIsDeletingRecords(false);
+    }
+  };
+
   const handleExportCsv = () => {
     const exportRows = filteredRecords.filter((r) => !r.isDuplicate);
     if (exportRows.length === 0) return;
@@ -1840,32 +2001,44 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             {/* Filter Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-              {/* Origin Tabs */}
-              <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
-                {(
-                  [
-                    { id: 'all', label: `All (${combinedRecords.length})` },
-                    { id: 'sheet', label: `In Sheet (${sheetRecords.length})` },
-                    { id: 'ready', label: `Ready (${scanPipeline.readyOrders.length})` },
-                    {
-                      id: 'duplicates',
-                      label: `Duplicates (${scanPipeline.duplicateOrders.length})`,
-                    },
-                  ] as Array<{ id: OriginFilter; label: string }>
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setOriginFilter(tab.id)}
-                    className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
-                      originFilter === tab.id
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
+              {/* Origin Tabs + Delete All */}
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
+                  {(
+                    [
+                      { id: 'all', label: `All (${combinedRecords.length})` },
+                      { id: 'sheet', label: `In Sheet (${sheetRecords.length})` },
+                      { id: 'ready', label: `Ready (${scanPipeline.readyOrders.length})` },
+                      {
+                        id: 'duplicates',
+                        label: `Duplicates (${scanPipeline.duplicateOrders.length})`,
+                      },
+                    ] as Array<{ id: OriginFilter; label: string }>
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setOriginFilter(tab.id)}
+                      className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
+                        originFilter === tab.id
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleRequestDeleteAll}
+                  disabled={filteredRecords.length === 0 || isDeletingRecords}
+                  title="Delete all currently listed Amazon order records (requires confirmation)"
+                  className="px-1.5 py-1 text-xs font-medium text-red-700 hover:text-red-800 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline whitespace-nowrap"
+                >
+                  Delete All
+                </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -1980,6 +2153,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
               bankByIdMap={bankByIdMap}
               updatingReconKey={updatingReconKey}
               updatingCategoryKey={updatingCategoryKey}
+              isDeletingRecords={isDeletingRecords}
               onSignIn={onSignIn}
               onToggleSort={handleToggleSort}
               onEditRecord={(rec) =>
@@ -1989,6 +2163,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                   record: rec,
                 })
               }
+              onDeleteRecord={handleRequestDeleteSingle}
               onUpdateIsRecon={handleUpdateIsRecon}
               onUpdateCategory={(rec, category) => void handleUpdateCategory(rec, category)}
               onTriggerUpload={() => fileInputRef.current?.click()}
@@ -2038,6 +2213,28 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           setCategorizeReviewState({ isOpen: false, items: [] })
         }
         onApply={handleApplyAutoCategories}
+      />
+
+      <AmazonDeleteConfirmModal
+        isOpen={deleteConfirmState.isOpen}
+        mode={deleteConfirmState.mode}
+        records={deleteConfirmState.records}
+        isFiltered={
+          originFilter !== 'all' ||
+          statusFilter !== 'all' ||
+          reconFilter !== 'all' ||
+          paymentMethodFilter !== 'all' ||
+          categoryFilter !== 'all' ||
+          Boolean(searchQuery) ||
+          Boolean(startDate) ||
+          Boolean(endDate)
+        }
+        isDeleting={isDeletingRecords}
+        onCancel={() =>
+          !isDeletingRecords &&
+          setDeleteConfirmState({ isOpen: false, mode: 'single', records: [] })
+        }
+        onConfirm={() => void handleConfirmDelete()}
       />
     </div>
   );

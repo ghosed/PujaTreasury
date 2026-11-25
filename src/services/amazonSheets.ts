@@ -868,3 +868,87 @@ export async function updateAmazonBankId(
     }
   );
 }
+
+export async function deleteAmazonRows(
+  accessToken: string,
+  meta: AmazonSheetMeta,
+  sheetRowNumbers: number[]
+): Promise<number> {
+  if (!meta.ledgerTabExists) return 0;
+
+  const minDataRow = meta.needsHeader ? 1 : 2;
+  const uniqueRowsDesc = Array.from(
+    new Set(
+      sheetRowNumbers.filter((n) => Number.isInteger(n) && n >= minDataRow)
+    )
+  ).sort((a, b) => b - a);
+
+  if (uniqueRowsDesc.length === 0) return 0;
+
+  const metaResp = await sheetsFetch<SpreadsheetMetadata>(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      meta.spreadsheetId
+    )}?fields=sheets.properties`,
+    accessToken
+  );
+
+  const sheetId = metaResp.sheets?.find(
+    (s) => s.properties?.title === meta.ledgerTabName
+  )?.properties?.sheetId;
+
+  if (sheetId === undefined) {
+    throw new Error(`Tab "${meta.ledgerTabName}" was not found in Amazon_Ledger.`);
+  }
+
+  // Group contiguous row numbers into descending ranges so bottom-up deletion keeps earlier indices valid
+  const ranges: Array<{ startIndex: number; endIndex: number }> = [];
+  let rangeEndRow = uniqueRowsDesc[0];
+  let rangeStartRow = uniqueRowsDesc[0];
+
+  for (let i = 1; i < uniqueRowsDesc.length; i++) {
+    const rowNum = uniqueRowsDesc[i];
+    if (rowNum === rangeStartRow - 1) {
+      rangeStartRow = rowNum;
+    } else {
+      ranges.push({
+        startIndex: rangeStartRow - 1,
+        endIndex: rangeEndRow,
+      });
+      rangeEndRow = rowNum;
+      rangeStartRow = rowNum;
+    }
+  }
+  ranges.push({
+    startIndex: rangeStartRow - 1,
+    endIndex: rangeEndRow,
+  });
+
+  const requests = ranges.map((r) => ({
+    deleteDimension: {
+      range: {
+        sheetId,
+        dimension: 'ROWS',
+        startIndex: r.startIndex,
+        endIndex: r.endIndex,
+      },
+    },
+  }));
+
+  const CHUNK_SIZE = 500;
+  for (let i = 0; i < requests.length; i += CHUNK_SIZE) {
+    const chunk = requests.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({ requests: chunk }),
+      }
+    );
+  }
+
+  return uniqueRowsDesc.length;
+}
+

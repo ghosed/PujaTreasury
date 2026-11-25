@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, FileUp, Pencil, Plus } from 'lucide-react';
 import { AmazonOrderRecord, AmazonOrderStatus } from '../../types/amazon';
+import { ExpenseRecord } from '../../types/expense';
+import { BankLedgerLookupRecord } from './AmazonEntryModal';
 import { isValid12DigitAmazonUniqueId } from '../../utils/amazonProcessor';
 import { GoogleSignInButton } from '../GoogleSignInButton';
 import { TablePagination } from '../TablePagination';
@@ -16,6 +18,8 @@ interface AmazonGridProps {
   sortField: AmazonSortField;
   sortOrder: 'desc' | 'asc';
   expenseCategoryOptions: string[];
+  expenseByIdMap?: Map<string, ExpenseRecord>;
+  bankByIdMap?: Map<string, BankLedgerLookupRecord>;
   updatingReconKey: string | null;
   updatingCategoryKey: string | null;
   onSignIn: () => void;
@@ -52,6 +56,8 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
   sortField,
   sortOrder,
   expenseCategoryOptions,
+  expenseByIdMap,
+  bankByIdMap,
   updatingReconKey,
   updatingCategoryKey,
   onSignIn,
@@ -227,7 +233,9 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
               <th className="px-2 py-2 text-right font-medium whitespace-nowrap">Total</th>
               <th className="px-2 py-2 font-medium">Shipped To / Payment</th>
               <th className="px-2 py-2 font-medium whitespace-nowrap">Status</th>
-              <th className="py-2 pl-2 pr-3 font-medium whitespace-nowrap">Category</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">Category</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">Exp_ID</th>
+              <th className="py-2 pl-2 pr-3 font-medium whitespace-nowrap">Bank_ID</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -398,7 +406,7 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
                     </span>
                   </td>
 
-                  <td className="py-2 pl-2 pr-3 whitespace-nowrap">
+                  <td className="px-2 py-2 whitespace-nowrap">
                     <select
                       value={currentCat}
                       onChange={(e) => onUpdateCategory(rec, e.target.value)}
@@ -413,6 +421,82 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
                         </option>
                       ))}
                     </select>
+                  </td>
+
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    {(() => {
+                      const trimmedExpId = (rec.expId ?? '').trim();
+                      const matchedExp = trimmedExpId
+                        ? expenseByIdMap?.get(trimmedExpId)
+                        : undefined;
+                      if (trimmedExpId) {
+                        const tooltip = matchedExp
+                          ? `${matchedExp.expId} · ${matchedExp.date} · ${Math.abs(matchedExp.amount).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} · ${matchedExp.description}`
+                          : `Exp_ID: ${trimmedExpId}`;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => onEditRecord(rec)}
+                            disabled={isDup}
+                            title={tooltip}
+                            className="text-left font-mono text-[11px] font-medium text-teal-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50 tabular-nums"
+                          >
+                            {trimmedExpId}
+                          </button>
+                        );
+                      }
+                      if (isDup) {
+                        return <span className="text-[11px] text-slate-400">—</span>;
+                      }
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => onEditRecord(rec)}
+                          title="Match or enter Expense Ledger Exp_ID"
+                          className="font-mono text-[11px] text-slate-400 hover:text-teal-700 hover:underline"
+                        >
+                          —
+                        </button>
+                      );
+                    })()}
+                  </td>
+
+                  <td className="py-2 pl-2 pr-3 whitespace-nowrap">
+                    {(() => {
+                      const trimmedBankId = (rec.bankId ?? '').trim();
+                      const matchedBank = trimmedBankId
+                        ? bankByIdMap?.get(trimmedBankId)
+                        : undefined;
+                      if (trimmedBankId) {
+                        const tooltip = matchedBank
+                          ? `${matchedBank.uniqueId} (${matchedBank.accountTab}) · ${matchedBank.date} · ${Math.abs(matchedBank.amount).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} · ${matchedBank.description}`
+                          : `Bank_ID: ${trimmedBankId}`;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => onEditRecord(rec)}
+                            disabled={isDup}
+                            title={tooltip}
+                            className="max-w-[130px] truncate text-left font-mono text-[11px] font-medium text-teal-800 hover:underline disabled:cursor-not-allowed disabled:opacity-50 tabular-nums"
+                          >
+                            {trimmedBankId}
+                          </button>
+                        );
+                      }
+                      if (isDup) {
+                        return <span className="text-[11px] text-slate-400">—</span>;
+                      }
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => onEditRecord(rec)}
+                          title="Match or enter Bank Statement Ledger Bank_ID"
+                          className="font-mono text-[11px] text-slate-400 hover:text-teal-700 hover:underline"
+                        >
+                          —
+                        </button>
+                      );
+                    })()}
                   </td>
                 </tr>
               );

@@ -117,6 +117,8 @@ export const AmazonSyncConfirmModal: React.FC<AmazonSyncConfirmModalProps> = ({
                       <th className="px-3 py-1.5 text-right font-medium whitespace-nowrap">Total</th>
                       <th className="px-3 py-1.5 font-medium whitespace-nowrap">Status</th>
                       <th className="px-3 py-1.5 font-medium">Category</th>
+                      <th className="px-3 py-1.5 font-medium whitespace-nowrap">Exp_ID</th>
+                      <th className="px-3 py-1.5 font-medium whitespace-nowrap">Bank_ID</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -161,6 +163,12 @@ export const AmazonSyncConfirmModal: React.FC<AmazonSyncConfirmModalProps> = ({
                         </td>
                         <td className="max-w-[120px] truncate px-3 py-1.5 text-[11px]">
                           {ord.category || '—'}
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-[11px] text-teal-800 whitespace-nowrap tabular-nums">
+                          {ord.expId || '—'}
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-[11px] text-teal-800 whitespace-nowrap tabular-nums">
+                          {ord.bankId || '—'}
                         </td>
                       </tr>
                     ))}

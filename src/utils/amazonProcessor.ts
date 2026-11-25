@@ -261,6 +261,8 @@ export function processScannedAmazonFiles(
           : normalizeAmazonStatus(raw.status);
       const isRecon: 'Yes' | 'No' = ov?.isRecon === 'Yes' ? 'Yes' : 'No';
       const category = (ov?.category ?? raw.category ?? '').trim();
+      const expId = (ov?.expId ?? '').trim();
+      const bankId = (ov?.bankId ?? '').trim();
 
       const keyArgs = {
         orderNumber,
@@ -293,6 +295,8 @@ export function processScannedAmazonFiles(
           status,
           isRecon,
           category,
+          expId,
+          bankId,
           sourceOrigin: 'scan',
           sourceFileName: file.fileName,
           isDuplicate: true,
@@ -321,6 +325,8 @@ export function processScannedAmazonFiles(
         status,
         isRecon,
         category,
+        expId,
+        bankId,
         sourceOrigin: 'scan',
         sourceFileName: file.fileName,
         isDuplicate: false,

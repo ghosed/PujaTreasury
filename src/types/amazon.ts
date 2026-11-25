@@ -70,6 +70,8 @@ export interface AmazonOrderRecord {
   status: AmazonOrderStatus;
   isRecon: 'Yes' | 'No';
   category: string;
+  expId?: string;
+  bankId?: string;
   sourceOrigin: 'sheet' | 'scan';
   sourceFileName?: string;
   isDuplicate?: boolean;
@@ -103,8 +105,12 @@ export interface AmazonSheetMeta {
   needsHeader: boolean;
   hasIsReconHeader: boolean;
   hasCategoryHeader: boolean;
+  hasExpIdHeader: boolean;
+  hasBankIdHeader: boolean;
   isReconColIndex: number;
   categoryColIndex: number;
+  expIdColIndex: number;
+  bankIdColIndex: number;
   columnHeaders: string[];
 }
 

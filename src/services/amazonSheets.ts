@@ -30,6 +30,8 @@ export const CANONICAL_AMAZON_HEADERS = [
   'Status',
   'Is_Recon',
   'Category',
+  'Exp_ID',
+  'Bank_ID',
 ] as const;
 
 interface SpreadsheetMetadata {
@@ -105,7 +107,9 @@ type AmazonFieldKey =
   | 'paymentMethod'
   | 'status'
   | 'isRecon'
-  | 'category';
+  | 'category'
+  | 'expId'
+  | 'bankId';
 
 const HEADER_TO_AMAZON_FIELD: Record<string, AmazonFieldKey> = {
   uniqueid: 'uniqueId',
@@ -144,6 +148,17 @@ const HEADER_TO_AMAZON_FIELD: Record<string, AmazonFieldKey> = {
   isrecon: 'isRecon',
   category: 'category',
   cat: 'category',
+  expid: 'expId',
+  expenseid: 'expId',
+  expenseledgerid: 'expId',
+  linkedexpid: 'expId',
+  matchingexpid: 'expId',
+  bankid: 'bankId',
+  bankstatementid: 'bankId',
+  banktransactionid: 'bankId',
+  bankledgerid: 'bankId',
+  linkedbankid: 'bankId',
+  matchingbankid: 'bankId',
 };
 
 function buildAmazonFieldMap(headers: string[]): Map<AmazonFieldKey, number> {
@@ -160,14 +175,23 @@ function buildAmazonFieldMap(headers: string[]): Map<AmazonFieldKey, number> {
 
 function serializeAmazonRow(
   record: AmazonOrderRecord,
-  meta: Pick<AmazonSheetMeta, 'columnHeaders' | 'isReconColIndex' | 'categoryColIndex'>
+  meta: Pick<
+    AmazonSheetMeta,
+    | 'columnHeaders'
+    | 'isReconColIndex'
+    | 'categoryColIndex'
+    | 'expIdColIndex'
+    | 'bankIdColIndex'
+  >
 ): Array<string | number> {
   const fieldToIdx = buildAmazonFieldMap(meta.columnHeaders);
   const length = Math.max(
     meta.columnHeaders.length,
     CANONICAL_AMAZON_HEADERS.length,
     meta.isReconColIndex + 1,
-    meta.categoryColIndex + 1
+    meta.categoryColIndex + 1,
+    meta.expIdColIndex + 1,
+    meta.bankIdColIndex + 1
   );
   const row: Array<string | number> = record.rawRowValues
     ? [...record.rawRowValues]
@@ -212,6 +236,8 @@ function serializeAmazonRow(
   setField('status', record.status, 9);
   setField('isRecon', record.isRecon || 'No', meta.isReconColIndex);
   setField('category', record.category || '', meta.categoryColIndex);
+  setField('expId', (record.expId ?? '').trim(), meta.expIdColIndex);
+  setField('bankId', (record.bankId ?? '').trim(), meta.bankIdColIndex);
 
   return row;
 }
@@ -292,6 +318,14 @@ export async function fetchAmazonLedger(
   const categoryColIndex =
     fieldIdx.get('category') ?? (needsHeader ? 11 : nextExtraIdx++);
 
+  const hasExpIdHeader = needsHeader ? true : fieldIdx.has('expId');
+  const expIdColIndex =
+    fieldIdx.get('expId') ?? (needsHeader ? 12 : nextExtraIdx++);
+
+  const hasBankIdHeader = needsHeader ? true : fieldIdx.has('bankId');
+  const bankIdColIndex =
+    fieldIdx.get('bankId') ?? (needsHeader ? 13 : nextExtraIdx++);
+
   const startRowIdx = needsHeader ? 0 : 1;
   const records: AmazonOrderRecord[] = [];
   const existingIds = new Set<string>();
@@ -342,6 +376,12 @@ export async function fetchAmazonLedger(
     const category = hasCategoryHeader
       ? String(row[categoryColIndex] ?? '').trim()
       : '';
+    const expId = hasExpIdHeader
+      ? String(row[expIdColIndex] ?? '').trim()
+      : '';
+    const bankId = hasBankIdHeader
+      ? String(row[bankIdColIndex] ?? '').trim()
+      : '';
 
     const keyArgs = {
       orderNumber,
@@ -373,6 +413,8 @@ export async function fetchAmazonLedger(
       status,
       isRecon,
       category,
+      expId,
+      bankId,
       sourceOrigin: 'sheet',
       sheetRowNumber: i + 1,
       rawRowValues: row,
@@ -388,8 +430,12 @@ export async function fetchAmazonLedger(
       needsHeader,
       hasIsReconHeader,
       hasCategoryHeader,
+      hasExpIdHeader,
+      hasBankIdHeader,
       isReconColIndex,
       categoryColIndex,
+      expIdColIndex,
+      bankIdColIndex,
       columnHeaders,
     },
     records,
@@ -398,11 +444,11 @@ export async function fetchAmazonLedger(
   };
 }
 
-async function ensureAmazonExtraHeaders(
+export async function ensureAmazonExtraHeaders(
   accessToken: string,
   meta: AmazonSheetMeta
-): Promise<void> {
-  if (!meta.ledgerTabExists || meta.needsHeader) return;
+): Promise<AmazonSheetMeta> {
+  if (!meta.ledgerTabExists || meta.needsHeader) return meta;
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
   const data: Array<{ range: string; values: string[][] }> = [];
 
@@ -418,8 +464,20 @@ async function ensureAmazonExtraHeaders(
       values: [['Category']],
     });
   }
+  if (!meta.hasExpIdHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(meta.expIdColIndex)}1`,
+      values: [['Exp_ID']],
+    });
+  }
+  if (!meta.hasBankIdHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(meta.bankIdColIndex)}1`,
+      values: [['Bank_ID']],
+    });
+  }
 
-  if (data.length === 0) return;
+  if (data.length === 0) return meta;
 
   await sheetsFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
@@ -434,6 +492,32 @@ async function ensureAmazonExtraHeaders(
       }),
     }
   );
+
+  const nextHeaders = [...meta.columnHeaders];
+  while (
+    nextHeaders.length <=
+    Math.max(
+      meta.isReconColIndex,
+      meta.categoryColIndex,
+      meta.expIdColIndex,
+      meta.bankIdColIndex
+    )
+  ) {
+    nextHeaders.push('');
+  }
+  if (!meta.hasIsReconHeader) nextHeaders[meta.isReconColIndex] = 'Is_Recon';
+  if (!meta.hasCategoryHeader) nextHeaders[meta.categoryColIndex] = 'Category';
+  if (!meta.hasExpIdHeader) nextHeaders[meta.expIdColIndex] = 'Exp_ID';
+  if (!meta.hasBankIdHeader) nextHeaders[meta.bankIdColIndex] = 'Bank_ID';
+
+  return {
+    ...meta,
+    hasIsReconHeader: true,
+    hasCategoryHeader: true,
+    hasExpIdHeader: true,
+    hasBankIdHeader: true,
+    columnHeaders: nextHeaders,
+  };
 }
 
 export async function prepareAmazonSyncPlan(
@@ -569,7 +653,9 @@ export async function updateAmazonRecord(
       serializedRow.length,
       meta.columnHeaders.length,
       meta.isReconColIndex + 1,
-      meta.categoryColIndex + 1
+      meta.categoryColIndex + 1,
+      meta.expIdColIndex + 1,
+      meta.bankIdColIndex + 1
     ) - 1
   );
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
@@ -721,4 +807,64 @@ export async function batchUpdateAmazonCategories(
   }
 
   return validUpdates.length;
+}
+
+export async function updateAmazonExpId(
+  accessToken: string,
+  meta: AmazonSheetMeta,
+  sheetRowNumber: number,
+  expId: string
+): Promise<void> {
+  if (!sheetRowNumber || sheetRowNumber < 1) {
+    throw new Error('Cannot update Exp_ID for an unsaved Amazon order record.');
+  }
+
+  await ensureAmazonExtraHeaders(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.expIdColIndex);
+  const range = encodeURIComponent(`${safeTab}!${colA1}${sheetRowNumber}`);
+
+  await sheetsFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      meta.spreadsheetId
+    )}/values/${range}?valueInputOption=RAW`,
+    accessToken,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        majorDimension: 'ROWS',
+        values: [[expId.trim()]],
+      }),
+    }
+  );
+}
+
+export async function updateAmazonBankId(
+  accessToken: string,
+  meta: AmazonSheetMeta,
+  sheetRowNumber: number,
+  bankId: string
+): Promise<void> {
+  if (!sheetRowNumber || sheetRowNumber < 1) {
+    throw new Error('Cannot update Bank_ID for an unsaved Amazon order record.');
+  }
+
+  await ensureAmazonExtraHeaders(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.bankIdColIndex);
+  const range = encodeURIComponent(`${safeTab}!${colA1}${sheetRowNumber}`);
+
+  await sheetsFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+      meta.spreadsheetId
+    )}/values/${range}?valueInputOption=RAW`,
+    accessToken,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        majorDimension: 'ROWS',
+        values: [[bankId.trim()]],
+      }),
+    }
+  );
 }

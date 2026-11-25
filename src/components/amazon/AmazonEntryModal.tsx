@@ -1,18 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FileSpreadsheet, X } from 'lucide-react';
+import { FileSpreadsheet, Link2, Search, X } from 'lucide-react';
 import { AmazonOrderRecord, AmazonOrderStatus } from '../../types/amazon';
+import { ExpenseRecord } from '../../types/expense';
+import { AccountType, NormalizedTransaction } from '../../types/statement';
 import {
   buildAmazonDuplicateKey,
   buildAmazonUniqueId,
   normalizeAmazonDate,
   parseOptionalAmazonNumber,
 } from '../../utils/amazonProcessor';
+import { parseExactAmountQueryCents, toCents } from '../../utils/reconAllocations';
+
+export type BankLedgerLookupRecord = NormalizedTransaction & { accountTab: AccountType };
 
 interface AmazonEntryModalProps {
   isOpen: boolean;
   mode: 'create' | 'edit';
   record: AmazonOrderRecord | null;
   expenseCategoryOptions: string[];
+  expenseRecords?: ExpenseRecord[];
+  bankRecords?: BankLedgerLookupRecord[];
   isSaving: boolean;
   onClose: () => void;
   onSave: (
@@ -34,6 +41,8 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
   mode,
   record,
   expenseCategoryOptions,
+  expenseRecords = [],
+  bankRecords = [],
   isSaving,
   onClose,
   onSave,
@@ -49,11 +58,21 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
   const [status, setStatus] = useState<AmazonOrderStatus>('');
   const [isRecon, setIsRecon] = useState<'Yes' | 'No'>('No');
   const [category, setCategory] = useState('');
+  const [expId, setExpId] = useState('');
+  const [showExpPicker, setShowExpPicker] = useState(false);
+  const [expSearch, setExpSearch] = useState('');
+  const [bankId, setBankId] = useState('');
+  const [showBankPicker, setShowBankPicker] = useState(false);
+  const [bankSearch, setBankSearch] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setValidationError(null);
+    setShowExpPicker(false);
+    setExpSearch('');
+    setShowBankPicker(false);
+    setBankSearch('');
     if (mode === 'edit' && record) {
       setOrderNumber(record.orderNumber);
       setOrderDate(record.orderDate);
@@ -66,6 +85,8 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
       setStatus(record.status);
       setIsRecon(record.isRecon);
       setCategory((record.category ?? '').trim());
+      setExpId((record.expId ?? '').trim());
+      setBankId((record.bankId ?? '').trim());
     } else {
       setOrderNumber('');
       setOrderDate(new Date().toISOString().slice(0, 10));
@@ -78,6 +99,8 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
       setStatus('Ordered');
       setIsRecon('No');
       setCategory('');
+      setExpId('');
+      setBankId('');
     }
   }, [isOpen, mode, record]);
 
@@ -89,6 +112,77 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
     }
     return base;
   }, [expenseCategoryOptions, category]);
+
+  const targetTotalCents = useMemo(() => {
+    const parsedTotal = parseOptionalAmazonNumber(total, 2);
+    if (parsedTotal !== null) return toCents(parsedTotal);
+    const parsedPrice = parseOptionalAmazonNumber(itemPrice, 2);
+    return parsedPrice !== null ? toCents(parsedPrice) : null;
+  }, [total, itemPrice]);
+
+  const matchedExpensePreview = useMemo(() => {
+    const trimmed = expId.trim();
+    if (!trimmed) return null;
+    return expenseRecords.find((e) => e.expId.trim() === trimmed) ?? null;
+  }, [expId, expenseRecords]);
+
+  const matchedBankPreview = useMemo(() => {
+    const trimmed = bankId.trim();
+    if (!trimmed) return null;
+    return bankRecords.find((b) => b.uniqueId.trim() === trimmed) ?? null;
+  }, [bankId, bankRecords]);
+
+  const candidateExpenses = useMemo(() => {
+    if (!showExpPicker || expenseRecords.length === 0) return [];
+    const q = expSearch.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(expSearch);
+
+    const filtered = expenseRecords.filter((exp) => {
+      if (!q) return true;
+      if (queryAmountCents !== null) {
+        return toCents(Math.abs(exp.amount)) === queryAmountCents;
+      }
+      const hay = `${exp.expId} ${exp.date} ${exp.category} ${exp.subCategory} ${exp.description} ${exp.paymentMode} ${exp.reconSource}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    return [...filtered]
+      .sort((a, b) => {
+        if (targetTotalCents !== null) {
+          const aExact = toCents(Math.abs(a.amount)) === targetTotalCents ? 1 : 0;
+          const bExact = toCents(Math.abs(b.amount)) === targetTotalCents ? 1 : 0;
+          if (aExact !== bExact) return bExact - aExact;
+        }
+        return b.date.localeCompare(a.date);
+      })
+      .slice(0, 60);
+  }, [showExpPicker, expenseRecords, expSearch, targetTotalCents]);
+
+  const candidateBankTransactions = useMemo(() => {
+    if (!showBankPicker || bankRecords.length === 0) return [];
+    const q = bankSearch.trim().toLowerCase();
+    const queryAmountCents = parseExactAmountQueryCents(bankSearch);
+
+    const filtered = bankRecords.filter((tx) => {
+      if (!q) return true;
+      if (queryAmountCents !== null) {
+        return toCents(Math.abs(tx.amount)) === queryAmountCents;
+      }
+      const hay = `${tx.uniqueId} ${tx.accountTab} ${tx.date} ${tx.description} ${tx.source} ${tx.referenceNumber} ${tx.category ?? ''} ${tx.targetId ?? ''}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    return [...filtered]
+      .sort((a, b) => {
+        if (targetTotalCents !== null) {
+          const aExact = toCents(Math.abs(a.amount)) === targetTotalCents ? 1 : 0;
+          const bExact = toCents(Math.abs(b.amount)) === targetTotalCents ? 1 : 0;
+          if (aExact !== bExact) return bExact - aExact;
+        }
+        return b.date.localeCompare(a.date);
+      })
+      .slice(0, 60);
+  }, [showBankPicker, bankRecords, bankSearch, targetTotalCents]);
 
   if (!isOpen) return null;
 
@@ -172,6 +266,8 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
       status,
       isRecon,
       category: category.trim(),
+      expId: expId.trim(),
+      bankId: bankId.trim(),
       sourceOrigin: record?.sourceOrigin ?? 'scan',
       sourceFileName: record?.sourceFileName ?? 'Manual Amazon Order Entry',
       isDuplicate: false,
@@ -414,6 +510,273 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="sm:col-span-2">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="amz-exp-id" className="block text-xs font-medium text-slate-700">
+                  Exp_ID (Matching Expense Ledger ID)
+                </label>
+                {expenseRecords.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowExpPicker((prev) => !prev)}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-teal-700 hover:underline disabled:opacity-50"
+                  >
+                    <Link2 className="h-3 w-3" aria-hidden="true" />
+                    {showExpPicker ? 'Hide Expense_Ledger Picker' : 'Match from Expense_Ledger'}
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  id="amz-exp-id"
+                  type="text"
+                  value={expId}
+                  onChange={(e) => setExpId(e.target.value)}
+                  disabled={isSaving}
+                  placeholder="Optional matching Exp_ID from Expense_Ledger"
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+                />
+                {expId && (
+                  <button
+                    type="button"
+                    onClick={() => setExpId('')}
+                    disabled={isSaving}
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {matchedExpensePreview && (
+                <div className="mt-1.5 rounded border border-teal-200 bg-teal-50/50 px-3 py-1.5 text-[11px] text-teal-950">
+                  <span className="font-mono font-semibold">{matchedExpensePreview.expId}</span>
+                  {' · '}
+                  <span className="font-mono">{matchedExpensePreview.date || '—'}</span>
+                  {' · '}
+                  <span className="font-mono font-semibold">
+                    {Math.abs(matchedExpensePreview.amount).toLocaleString('en-US', {
+                      style: 'currency',
+                      currency: 'USD',
+                    })}
+                  </span>
+                  {matchedExpensePreview.category ? ` · ${matchedExpensePreview.category}` : ''}
+                  {matchedExpensePreview.description
+                    ? ` — ${matchedExpensePreview.description}`
+                    : ''}
+                </div>
+              )}
+
+              {showExpPicker && (
+                <div className="mt-2 space-y-2 rounded-md border border-teal-200 bg-slate-50/70 p-3">
+                  <div className="relative">
+                    <Search
+                      className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      value={expSearch}
+                      onChange={(e) => setExpSearch(e.target.value)}
+                      placeholder="Search Expense_Ledger by Exp_ID, exact amount, description, category, date..."
+                      className="w-full rounded border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                    />
+                  </div>
+
+                  {candidateExpenses.length === 0 ? (
+                    <div className="py-3 text-center text-xs text-slate-500">
+                      No Expense_Ledger rows match your search.
+                    </div>
+                  ) : (
+                    <div className="max-h-44 divide-y divide-slate-100 overflow-y-auto rounded border border-slate-200 bg-white">
+                      {candidateExpenses.map((exp) => {
+                        const isPicked = expId.trim() === exp.expId.trim();
+                        const isExactAmt =
+                          targetTotalCents !== null &&
+                          toCents(Math.abs(exp.amount)) === targetTotalCents;
+                        return (
+                          <button
+                            key={`${exp.expId}-${exp.sheetRowNumber ?? ''}`}
+                            type="button"
+                            onClick={() => {
+                              setExpId(exp.expId.trim());
+                              setShowExpPicker(false);
+                            }}
+                            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors ${
+                              isPicked ? 'bg-teal-50 text-teal-950' : 'hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+                                <span className="font-semibold text-teal-700">{exp.expId}</span>
+                                <span className="text-slate-400">·</span>
+                                <span className="text-slate-600">{exp.date || '—'}</span>
+                                <span className="text-slate-400">·</span>
+                                <span className="font-sans text-slate-600">
+                                  {exp.category || 'Uncategorized'}
+                                </span>
+                                {isExactAmt && (
+                                  <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-sans text-[10px] font-medium text-emerald-700">
+                                    Exact $ match
+                                  </span>
+                                )}
+                              </div>
+                              <div className="truncate text-[11px] text-slate-700">
+                                {exp.description || '—'}
+                              </div>
+                            </div>
+                            <span className="shrink-0 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                              {Math.abs(exp.amount).toLocaleString('en-US', {
+                                style: 'currency',
+                                currency: 'USD',
+                              })}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="sm:col-span-2">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="amz-bank-id" className="block text-xs font-medium text-slate-700">
+                  Bank_ID (Matching Bank Statement Ledger ID)
+                </label>
+                {bankRecords.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowBankPicker((prev) => !prev)}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-teal-700 hover:underline disabled:opacity-50"
+                  >
+                    <Link2 className="h-3 w-3" aria-hidden="true" />
+                    {showBankPicker ? 'Hide Bank_Ledger Picker' : 'Match from Bank_Ledger'}
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  id="amz-bank-id"
+                  type="text"
+                  value={bankId}
+                  onChange={(e) => setBankId(e.target.value)}
+                  disabled={isSaving}
+                  placeholder="Optional matching Unique Transaction ID from Bank_Ledger"
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+                />
+                {bankId && (
+                  <button
+                    type="button"
+                    onClick={() => setBankId('')}
+                    disabled={isSaving}
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {matchedBankPreview && (
+                <div className="mt-1.5 rounded border border-teal-200 bg-teal-50/50 px-3 py-1.5 text-[11px] text-teal-950">
+                  <span className="font-mono font-semibold">{matchedBankPreview.uniqueId}</span>
+                  {' · '}
+                  <span className="font-medium">{matchedBankPreview.accountTab}</span>
+                  {' · '}
+                  <span className="font-mono">{matchedBankPreview.date || '—'}</span>
+                  {' · '}
+                  <span className="font-mono font-semibold">
+                    {Math.abs(matchedBankPreview.amount).toLocaleString('en-US', {
+                      style: 'currency',
+                      currency: 'USD',
+                    })}
+                  </span>
+                  {matchedBankPreview.description ? ` — ${matchedBankPreview.description}` : ''}
+                </div>
+              )}
+
+              {showBankPicker && (
+                <div className="mt-2 space-y-2 rounded-md border border-teal-200 bg-slate-50/70 p-3">
+                  <div className="relative">
+                    <Search
+                      className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="search"
+                      value={bankSearch}
+                      onChange={(e) => setBankSearch(e.target.value)}
+                      placeholder="Search Bank_Ledger by Bank_ID, exact amount, description, source, date..."
+                      className="w-full rounded border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                    />
+                  </div>
+
+                  {candidateBankTransactions.length === 0 ? (
+                    <div className="py-3 text-center text-xs text-slate-500">
+                      No Bank_Ledger transactions match your search.
+                    </div>
+                  ) : (
+                    <div className="max-h-44 divide-y divide-slate-100 overflow-y-auto rounded border border-slate-200 bg-white">
+                      {candidateBankTransactions.map((tx) => {
+                        const isPicked = bankId.trim() === tx.uniqueId.trim();
+                        const isExactAmt =
+                          targetTotalCents !== null &&
+                          toCents(Math.abs(tx.amount)) === targetTotalCents;
+                        return (
+                          <button
+                            key={`${tx.accountTab}-${tx.uniqueId}-${tx.sheetRowNumber ?? ''}`}
+                            type="button"
+                            onClick={() => {
+                              setBankId(tx.uniqueId.trim());
+                              setShowBankPicker(false);
+                            }}
+                            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs transition-colors ${
+                              isPicked ? 'bg-teal-50 text-teal-950' : 'hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+                                <span className="font-semibold text-teal-700">{tx.uniqueId}</span>
+                                <span className="text-slate-400">·</span>
+                                <span className="font-sans text-slate-600">{tx.accountTab}</span>
+                                <span className="text-slate-400">·</span>
+                                <span className="text-slate-600">{tx.date || '—'}</span>
+                                {tx.category && (
+                                  <>
+                                    <span className="text-slate-400">·</span>
+                                    <span className="font-sans text-slate-600">{tx.category}</span>
+                                  </>
+                                )}
+                                {isExactAmt && (
+                                  <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-sans text-[10px] font-medium text-emerald-700">
+                                    Exact $ match
+                                  </span>
+                                )}
+                              </div>
+                              <div className="truncate text-[11px] text-slate-700">
+                                {tx.description || '—'}
+                              </div>
+                            </div>
+                            <span className="shrink-0 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                              {Math.abs(tx.amount).toLocaleString('en-US', {
+                                style: 'currency',
+                                currency: 'USD',
+                              })}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

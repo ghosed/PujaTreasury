@@ -26,6 +26,7 @@ import {
   RawExtractedAmazonItem,
   UploadedAmazonFile,
 } from '../../types/amazon';
+import { ExpenseRecord } from '../../types/expense';
 import {
   buildAmazonUniqueId,
   isValid12DigitAmazonUniqueId,
@@ -38,6 +39,7 @@ import {
   batchUpdateAmazonCategories,
   batchUpdateAmazonUniqueIds,
   CANONICAL_AMAZON_HEADERS,
+  ensureAmazonExtraHeaders,
   executeAmazonSyncPlan,
   fetchAmazonLedger,
   prepareAmazonSyncPlan,
@@ -48,16 +50,18 @@ import {
 import {
   BankLookUpCategories,
   fetchBankLookUpCategories,
+  fetchSheetLedger,
   SheetsApiError,
   TARGET_SPREADSHEET_ID,
 } from '../../services/googleSheets';
 import {
   EXPENSE_SPREADSHEET_ID,
   fetchExpenseCategories,
+  fetchExpenseWorkspace,
 } from '../../services/expenseSheets';
 import { clearCachedToken, getAccessToken } from '../../services/firebaseAuth';
 import { AmazonGrid, AmazonSortField } from './AmazonGrid';
-import { AmazonEntryModal } from './AmazonEntryModal';
+import { AmazonEntryModal, BankLedgerLookupRecord } from './AmazonEntryModal';
 import { AmazonSyncConfirmModal } from './AmazonSyncConfirmModal';
 import {
   AmazonCategorizeModal,
@@ -177,6 +181,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     incomeCategories: [],
   });
   const [expenseFallbackCategories, setExpenseFallbackCategories] = useState<string[]>([]);
+  const [expenseRecords, setExpenseRecords] = useState<ExpenseRecord[]>([]);
+  const [bankRecords, setBankRecords] = useState<BankLedgerLookupRecord[]>([]);
 
   // Notifications
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -187,6 +193,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [reconFilter, setReconFilter] = useState<ReconFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -227,14 +234,51 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
       setIsLoadingSheet(true);
       setErrorMessage(null);
       try {
-        const [loaded] = await Promise.all([
+        const [loaded, , expenseRes, pujaBankRes, regularBankRes] = await Promise.all([
           fetchAmazonLedger(token, AMAZON_SPREADSHEET_ID),
           loadAmazonLookupCategories(token),
+          fetchExpenseWorkspace(token, EXPENSE_SPREADSHEET_ID).catch(() => null),
+          fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Puja').catch(() => null),
+          fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Regular').catch(() => null),
         ]);
-        setSheetMeta(loaded.meta);
+
+        let activeMeta = loaded.meta;
+        if (
+          activeMeta.ledgerTabExists &&
+          !activeMeta.needsHeader &&
+          (!activeMeta.hasIsReconHeader ||
+            !activeMeta.hasCategoryHeader ||
+            !activeMeta.hasExpIdHeader ||
+            !activeMeta.hasBankIdHeader)
+        ) {
+          try {
+            activeMeta = await ensureAmazonExtraHeaders(token, activeMeta);
+          } catch {
+            // Keep loaded metadata if header auto-append is skipped
+          }
+        }
+
+        setSheetMeta(activeMeta);
         setSheetRecords(loaded.records);
         setExistingIds(loaded.existingIds);
         setExistingDuplicateKeys(loaded.existingDuplicateKeys);
+        if (expenseRes) {
+          setExpenseRecords(expenseRes.records);
+        }
+        const combinedBank: BankLedgerLookupRecord[] = [];
+        if (pujaBankRes) {
+          for (const tx of pujaBankRes.transactions) {
+            combinedBank.push({ ...tx, accountTab: 'Puja' });
+          }
+        }
+        if (regularBankRes) {
+          for (const tx of regularBankRes.transactions) {
+            combinedBank.push({ ...tx, accountTab: 'Regular' });
+          }
+        }
+        if (pujaBankRes || regularBankRes) {
+          setBankRecords(combinedBank);
+        }
         setHasLoadedSheet(true);
       } catch (err) {
         if (err instanceof SheetsApiError && err.status === 401) {
@@ -569,6 +613,39 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     return out.sort((a, b) => a.localeCompare(b));
   }, [amazonExpenseCategoryOptions, combinedRecords]);
 
+  const availablePaymentMethods = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of combinedRecords) {
+      const trimmed = (r.paymentMethod ?? '').trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(trimmed);
+      }
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }, [combinedRecords]);
+
+  const expenseByIdMap = useMemo(() => {
+    const map = new Map<string, ExpenseRecord>();
+    for (const exp of expenseRecords) {
+      const id = exp.expId.trim();
+      if (id) map.set(id, exp);
+    }
+    return map;
+  }, [expenseRecords]);
+
+  const bankByIdMap = useMemo(() => {
+    const map = new Map<string, BankLedgerLookupRecord>();
+    for (const tx of bankRecords) {
+      const id = tx.uniqueId.trim();
+      if (id) map.set(id, tx);
+    }
+    return map;
+  }, [bankRecords]);
+
   const filteredRecords = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const queryAmountCents = parseExactAmountQueryCents(searchQuery);
@@ -597,6 +674,15 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         return false;
       }
 
+      if (paymentMethodFilter === '__blank__') {
+        if ((rec.paymentMethod ?? '').trim() !== '') return false;
+      } else if (
+        paymentMethodFilter !== 'all' &&
+        (rec.paymentMethod ?? '').trim().toLowerCase() !== paymentMethodFilter.toLowerCase()
+      ) {
+        return false;
+      }
+
       if (startDate && (!rec.orderDate || rec.orderDate < startDate)) return false;
       if (endDate && (!rec.orderDate || rec.orderDate > endDate)) return false;
 
@@ -606,7 +692,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           ((rec.itemPrice !== null && toCents(rec.itemPrice) === queryAmountCents) ||
             (rec.total !== null && toCents(rec.total) === queryAmountCents));
         if (!matchesExactAmount) {
-          const hay = `${rec.uniqueId} ${rec.orderNumber} ${rec.itemDescription} ${rec.shippedTo} ${rec.paymentMethod} ${rec.status} ${rec.category ?? ''}`.toLowerCase();
+          const hay = `${rec.uniqueId} ${rec.orderNumber} ${rec.itemDescription} ${rec.shippedTo} ${rec.paymentMethod} ${rec.status} ${rec.category ?? ''} ${rec.expId ?? ''} ${rec.bankId ?? ''}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
       }
@@ -647,6 +733,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     statusFilter,
     reconFilter,
     categoryFilter,
+    paymentMethodFilter,
     startDate,
     endDate,
     searchQuery,
@@ -869,6 +956,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           status: nextRecord.status,
           isRecon: nextRecord.isRecon,
           category: nextRecord.category ?? '',
+          expId: nextRecord.expId ?? '',
+          bankId: nextRecord.bankId ?? '',
         },
       }));
       setEntryModalState({ isOpen: false, mode: 'create', record: null });
@@ -1169,6 +1258,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         rec.status,
         rec.isRecon,
         rec.category ?? '',
+        rec.expId ?? '',
+        rec.bankId ?? '',
         rec.sourceOrigin === 'sheet' ? 'Amazon_Ledger' : rec.sourceFileName || 'Scanned',
       ]
         .map(csvCell)
@@ -1192,6 +1283,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     setStatusFilter('all');
     setReconFilter('all');
     setCategoryFilter('all');
+    setPaymentMethodFilter('all');
     setSearchQuery('');
     setStartDate('');
     setEndDate('');
@@ -1787,8 +1879,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search Order #, exact amount, item, recipient..."
-                    className="w-56 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                    placeholder="Search Order #, Exp_ID, Bank_ID, exact amount..."
+                    className="w-44 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                   />
                 </div>
 
@@ -1821,6 +1913,23 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                   <option value="blank">Blank Status</option>
                 </select>
 
+                {/* Payment Method Filter */}
+                <select
+                  value={paymentMethodFilter}
+                  onChange={(e) => setPaymentMethodFilter(e.target.value)}
+                  aria-label="Filter by Payment Method"
+                  title="Filter orders by Payment Method"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                >
+                  <option value="all">All Payment Methods</option>
+                  <option value="__blank__">Blank Payment Method</option>
+                  {availablePaymentMethods.map((pm) => (
+                    <option key={pm} value={pm}>
+                      {pm}
+                    </option>
+                  ))}
+                </select>
+
                 {/* Category Filter */}
                 <select
                   value={categoryFilter}
@@ -1841,6 +1950,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                 {(originFilter !== 'all' ||
                   statusFilter !== 'all' ||
                   reconFilter !== 'all' ||
+                  paymentMethodFilter !== 'all' ||
                   categoryFilter !== 'all' ||
                   searchQuery ||
                   startDate ||
@@ -1866,6 +1976,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
               sortField={sortField}
               sortOrder={sortOrder}
               expenseCategoryOptions={amazonExpenseCategoryOptions}
+              expenseByIdMap={expenseByIdMap}
+              bankByIdMap={bankByIdMap}
               updatingReconKey={updatingReconKey}
               updatingCategoryKey={updatingCategoryKey}
               onSignIn={onSignIn}
@@ -1899,6 +2011,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         mode={entryModalState.mode}
         record={entryModalState.record}
         expenseCategoryOptions={amazonExpenseCategoryOptions}
+        expenseRecords={expenseRecords}
+        bankRecords={bankRecords}
         isSaving={isSavingModal}
         onClose={() =>
           !isSavingModal &&

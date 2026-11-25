@@ -1955,33 +1955,33 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
 
           {/* Expense Ledger Table Surface */}
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <div className="space-y-2.5 border-b border-slate-200 px-4 py-3">
-              {/* Row 1: Origin tabs + Search */}
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
-                  {(
-                    [
-                      { id: 'all', label: `All (${allRecords.length})` },
-                      { id: 'sheet', label: `In Sheet (${sheetRecords.length})` },
-                      { id: 'staged', label: `Staged CSV (${effectiveStagedRecords.length})` },
-                    ] as Array<{ id: OriginFilter; label: string }>
-                  ).map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setOriginFilter(tab.id)}
-                      className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
-                        originFilter === tab.id
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
+            {/* Filter Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
+                {(
+                  [
+                    { id: 'all', label: `All (${allRecords.length})` },
+                    { id: 'sheet', label: `In Sheet (${sheetRecords.length})` },
+                    { id: 'staged', label: `Staged CSV (${effectiveStagedRecords.length})` },
+                  ] as Array<{ id: OriginFilter; label: string }>
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setOriginFilter(tab.id)}
+                    className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
+                      originFilter === tab.id
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
 
-                <div className="relative min-w-[220px] flex-1 max-w-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
                   <Search
                     className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
                     aria-hidden="true"
@@ -1991,13 +1991,10 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search Exp_ID, exact amount, description..."
-                    className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                    className="w-44 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                   />
                 </div>
-              </div>
 
-              {/* Row 2: Attribute filter dropdowns */}
-              <div className="flex flex-wrap items-center gap-2">
                 <select
                   value={linkFilter}
                   onChange={(e) => setLinkFilter(e.target.value as ExpenseLinkFilter)}

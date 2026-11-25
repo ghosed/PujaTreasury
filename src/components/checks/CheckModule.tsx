@@ -456,38 +456,61 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
     return [...scanPipeline.readyChecks, ...scanPipeline.duplicateChecks, ...sheetRecords];
   }, [scanPipeline.readyChecks, scanPipeline.duplicateChecks, sheetRecords]);
 
-  // Month quick-filter presets
-  const monthOptions = useMemo(() => {
-    const set = new Set<string>();
+  // Date bounds & Time Period filter helpers
+  const dateBounds = useMemo(() => {
+    let minDate = '';
+    let maxDate = '';
+    const monthSet = new Set<string>();
+
     for (const rec of combinedRecords) {
-      if (rec.date && /^\d{4}-\d{2}/.test(rec.date)) {
-        set.add(rec.date.slice(0, 7));
-      }
+      if (!rec.date || !/^\d{4}-\d{2}-\d{2}$/.test(rec.date)) continue;
+      if (!minDate || rec.date < minDate) minDate = rec.date;
+      if (!maxDate || rec.date > maxDate) maxDate = rec.date;
+      monthSet.add(rec.date.slice(0, 7));
     }
-    return Array.from(set).sort((a, b) => b.localeCompare(a));
+
+    const months = Array.from(monthSet).sort((a, b) => b.localeCompare(a));
+    return { minDate, maxDate, months };
   }, [combinedRecords]);
 
-  const activeMonthPreset = useMemo(() => {
-    if (!startDate || !endDate) return '';
-    const ym = startDate.slice(0, 7);
-    const [y, m] = ym.split('-').map(Number);
-    if (!y || !m) return '';
-    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
-    const expectedStart = `${ym}-01`;
-    const expectedEnd = `${ym}-${String(lastDay).padStart(2, '0')}`;
-    return startDate === expectedStart && endDate === expectedEnd ? ym : '';
+  const activeMonthKey = useMemo(() => {
+    if (!startDate && !endDate) return 'all';
+    if (startDate && endDate && startDate.slice(0, 7) === endDate.slice(0, 7)) {
+      const ym = startDate.slice(0, 7);
+      const [y, m] = ym.split('-').map(Number);
+      if (y && m) {
+        const lastDay = String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0');
+        if (startDate === `${ym}-01` && endDate === `${ym}-${lastDay}`) {
+          return ym;
+        }
+      }
+    }
+    return 'custom';
+  }, [startDate, endDate]);
+
+  const periodLabel = useMemo(() => {
+    if (!startDate && !endDate) return 'All dates';
+    if (startDate && endDate) return `${startDate} to ${endDate}`;
+    if (startDate) return `From ${startDate}`;
+    return `Through ${endDate}`;
   }, [startDate, endDate]);
 
   const handleSelectMonth = (ym: string) => {
-    if (!ym) {
+    if (!ym || ym === 'all') {
       setStartDate('');
       setEndDate('');
       return;
     }
     const [y, m] = ym.split('-').map(Number);
-    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const lastDay = String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0');
     setStartDate(`${ym}-01`);
-    setEndDate(`${ym}-${String(lastDay).padStart(2, '0')}`);
+    setEndDate(`${ym}-${lastDay}`);
+  };
+
+  const formatMonthLabel = (ym: string) => {
+    const [y, m] = ym.split('-').map(Number);
+    const date = new Date(Date.UTC(y, m - 1, 1));
+    return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
   };
 
   const checkExpenseCategoryOptions = useMemo(() => {
@@ -1460,6 +1483,97 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
             </div>
           </div>
 
+          {/* Time Period Filter Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-2.5">
+            <div className="flex items-center gap-2 text-xs">
+              <Calendar className="h-4 w-4 text-slate-500" aria-hidden="true" />
+              <span className="font-medium text-slate-800">Time Period</span>
+              <span aria-hidden="true" className="text-slate-300">
+                ·
+              </span>
+              <span className="font-mono text-slate-600 tabular-nums">{periodLabel}</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleSelectMonth('all')}
+                title="Clear date filters and show checks across all dates"
+                className={`rounded-md border px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
+                  !startDate && !endDate
+                    ? 'border-teal-700 bg-teal-50 text-teal-800'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                All Time
+              </button>
+
+              {dateBounds.months.length > 0 && (
+                <select
+                  value={activeMonthKey}
+                  onChange={(e) => {
+                    if (e.target.value !== 'custom') {
+                      handleSelectMonth(e.target.value);
+                    }
+                  }}
+                  aria-label="Select Check Month Period"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                >
+                  <option value="all">All Months</option>
+                  {activeMonthKey === 'custom' && (
+                    <option value="custom">Custom Range</option>
+                  )}
+                  {dateBounds.months.map((ym) => (
+                    <option key={ym} value={ym}>
+                      {formatMonthLabel(ym)}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="check-period-start" className="text-xs text-slate-500">
+                  From
+                </label>
+                <input
+                  id="check-period-start"
+                  type="date"
+                  value={startDate}
+                  min={dateBounds.minDate || undefined}
+                  max={endDate || dateBounds.maxDate || undefined}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 font-mono text-xs text-slate-800 focus:border-teal-700 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <label htmlFor="check-period-end" className="text-xs text-slate-500">
+                  To
+                </label>
+                <input
+                  id="check-period-end"
+                  type="date"
+                  value={endDate}
+                  min={startDate || dateBounds.minDate || undefined}
+                  max={dateBounds.maxDate || undefined}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 font-mono text-xs text-slate-800 focus:border-teal-700 focus:outline-none"
+                />
+              </div>
+
+              {(startDate || endDate) && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectMonth('all')}
+                  title="Reset From and To date filters"
+                  className="text-xs font-medium text-slate-600 hover:text-slate-900 whitespace-nowrap"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Status & Error Banners */}
           {statusMessage && (
             <div className="flex items-center justify-between gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-900">
@@ -1613,51 +1727,12 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
             </div>
           </div>
 
-          {/* Filter Bar */}
-          <div className="space-y-2.5 rounded-lg border border-slate-200 bg-white p-3.5">
-            {/* Row 1: Month & Date Range */}
-            <div className="flex flex-wrap items-center gap-2.5">
-              <select
-                value={activeMonthPreset}
-                onChange={(e) => handleSelectMonth(e.target.value)}
-                aria-label="Quick select month"
-                title="Quick-select a calendar month"
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-              >
-                <option value="">All Months</option>
-                {monthOptions.map((ym) => (
-                  <option key={ym} value={ym}>
-                    {ym}
-                  </option>
-                ))}
-              </select>
-
-              <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                <Calendar className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  aria-label="Start Date"
-                  title="Filter checks from this date"
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-                />
-                <span>to</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  aria-label="End Date"
-                  title="Filter checks through this date"
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Row 2: Origin Tabs + Search */}
-            <div className="flex flex-wrap items-center gap-3">
+          {/* Check Grid Surface */}
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+            {/* Filter Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
               {/* Origin Tabs */}
-              <div className="inline-flex rounded-md bg-slate-100 p-1 text-xs font-medium">
+              <div className="flex flex-wrap items-center gap-1 rounded-md bg-slate-100 p-1">
                 {(
                   [
                     { id: 'all', label: `All (${combinedRecords.length})` },
@@ -1673,7 +1748,7 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                     key={tab.id}
                     type="button"
                     onClick={() => setOriginFilter(tab.id)}
-                    className={`rounded px-2.5 py-1 transition-colors whitespace-nowrap ${
+                    className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap transition-colors ${
                       originFilter === tab.id
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1684,87 +1759,83 @@ export const CheckModule: React.FC<CheckModuleProps> = ({
                 ))}
               </div>
 
-              {/* Search */}
-              <div className="relative min-w-[220px] flex-1">
-                <Search
-                  className="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
-                  aria-hidden="true"
-                />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search check #, exact amount, bank, paid to, paid by, category, memo, Unique ID..."
-                  className="w-full rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
-                />
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Search */}
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search check #, exact amount, bank, payee..."
+                    className="w-56 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                  />
+                </div>
+
+                {/* Transaction Type Filter */}
+                <select
+                  value={typeFilter}
+                  onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+                  aria-label="Filter by Transaction Type"
+                  title="Filter checks by Income or Expense"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                >
+                  <option value="all">All Types</option>
+                  <option value="Income">Income</option>
+                  <option value="Expense">Expense</option>
+                </select>
+
+                {/* Is_Recon Filter */}
+                <select
+                  value={reconFilter}
+                  onChange={(e) => setReconFilter(e.target.value as ReconFilter)}
+                  aria-label="Filter by Is_Recon"
+                  title="Filter checks by reconciliation status"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                >
+                  <option value="all">All Is_Recon</option>
+                  <option value="unrecon">Unreconciled (No)</option>
+                  <option value="recon">Reconciled (Yes)</option>
+                </select>
+
+                {/* Category Filter */}
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  aria-label="Filter by Category"
+                  title="Filter checks by category"
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
+                >
+                  <option value="all">All Categories</option>
+                  {availableCheckCategories.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+
+                {(originFilter !== 'all' ||
+                  typeFilter !== 'all' ||
+                  reconFilter !== 'all' ||
+                  categoryFilter !== 'all' ||
+                  searchQuery ||
+                  startDate ||
+                  endDate) && (
+                  <button
+                    type="button"
+                    onClick={resetFilters}
+                    title="Reset all active check filters and search text"
+                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    Clear Filters
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Row 3: Dropdown Filters */}
-            <div className="flex flex-wrap items-center gap-2.5">
-              {/* Is_Recon Filter */}
-              <select
-                value={reconFilter}
-                onChange={(e) => setReconFilter(e.target.value as ReconFilter)}
-                aria-label="Filter by Is_Recon"
-                title="Filter checks by reconciliation status"
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-              >
-                <option value="all">All Is_Recon</option>
-                <option value="unrecon">Unreconciled (No)</option>
-                <option value="recon">Reconciled (Yes)</option>
-              </select>
-
-              {/* Transaction Type Filter */}
-              <select
-                value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-                aria-label="Filter by Transaction Type"
-                title="Filter checks by Income or Expense"
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-              >
-                <option value="all">All Types</option>
-                <option value="Income">Income</option>
-                <option value="Expense">Expense</option>
-              </select>
-
-              {/* Category Filter */}
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                aria-label="Filter by Category"
-                title="Filter checks by category"
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-teal-700 focus:outline-none"
-              >
-                <option value="all">All Categories</option>
-                {availableCheckCategories.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
-
-              {(originFilter !== 'all' ||
-                typeFilter !== 'all' ||
-                reconFilter !== 'all' ||
-                categoryFilter !== 'all' ||
-                searchQuery ||
-                startDate ||
-                endDate) && (
-                <button
-                  type="button"
-                  onClick={resetFilters}
-                  title="Reset all active check filters and search text"
-                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
-                >
-                  Clear Filters
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Check Grid */}
-          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             <CheckGrid
               records={filteredRecords}
               hasUploadedFiles={uploadedFiles.length > 0}

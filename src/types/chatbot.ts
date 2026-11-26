@@ -1,4 +1,4 @@
-import { AccountType } from './statement';
+import type { AccountType } from './statement.ts';
 
 export type ChatbotLedgerScope = 'All' | AccountType;
 export type ChatbotPaymentStatusFilter = 'All' | 'Paid' | 'Pending';

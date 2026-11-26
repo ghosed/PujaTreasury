@@ -1,10 +1,10 @@
-import { CheckRecord } from '../types/check';
-import {
+import type { CheckRecord } from '../types/check.ts';
+import type {
   NormalizedTransaction,
   PipelineSummary,
   TransactionType,
   UploadedStatement,
-} from '../types/statement';
+} from '../types/statement.ts';
 
 const MONTHS: Record<string, string> = {
   jan: '01',

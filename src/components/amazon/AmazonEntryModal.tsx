@@ -7,6 +7,7 @@ import {
   buildAmazonDuplicateKey,
   buildAmazonUniqueId,
   normalizeAmazonDate,
+  normalizeAmazonPaymentMethod,
   parseOptionalAmazonNumber,
 } from '../../utils/amazonProcessor';
 import { parseExactAmountQueryCents, toCents } from '../../utils/reconAllocations';
@@ -81,7 +82,7 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
       setItemPrice(record.itemPrice !== null ? record.itemPrice.toFixed(2) : '');
       setTotal(record.total !== null ? record.total.toFixed(2) : '');
       setShippedTo(record.shippedTo);
-      setPaymentMethod(record.paymentMethod);
+      setPaymentMethod(normalizeAmazonPaymentMethod(record.paymentMethod));
       setStatus(record.status);
       setIsRecon(record.isRecon);
       setCategory((record.category ?? '').trim());
@@ -262,7 +263,7 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
       itemPrice: safePrice,
       total: safeTotal,
       shippedTo: shippedTo.trim(),
-      paymentMethod: paymentMethod.trim(),
+      paymentMethod: normalizeAmazonPaymentMethod(paymentMethod),
       status,
       isRecon,
       category: category.trim(),

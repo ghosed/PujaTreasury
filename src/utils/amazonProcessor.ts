@@ -133,6 +133,30 @@ export function normalizeAmazonStatus(raw: unknown): AmazonOrderStatus {
   return '';
 }
 
+export function normalizeAmazonPaymentMethod(raw: string): string {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed) return '';
+
+  const alreadyShortMatch = /^debit\s*[.•*…-]{2,}\s*(\d{4})$/i.exec(trimmed);
+  if (alreadyShortMatch) {
+    return `Debit ... ${alreadyShortMatch[1]}`;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (lower.includes('wells fargo') && lower.includes('debit')) {
+    const endingMatch =
+      /(?:ending\s*(?:in)?\s*[:#-]?\s*|[•*…]{2,}\s*|\.{2,}\s*|x)(\d{4})\b/i.exec(trimmed);
+    if (endingMatch) {
+      return `Debit ... ${endingMatch[1]}`;
+    }
+    const fourDigitMatches = trimmed.match(/(?<!\d)\d{4}(?!\d)/g);
+    const last4 = fourDigitMatches ? fourDigitMatches[fourDigitMatches.length - 1] : '';
+    return last4 ? `Debit ... ${last4}` : 'Debit';
+  }
+
+  return trimmed;
+}
+
 export function parseOptionalAmazonNumber(raw: unknown, decimals = 2): number | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === 'number') {
@@ -254,7 +278,9 @@ export function processScannedAmazonFiles(
           ? parseOptionalAmazonNumber(ov.total, 2)
           : parseOptionalAmazonNumber(raw.total, 2);
       const shippedTo = (ov?.shippedTo ?? raw.shippedTo ?? '').trim();
-      const paymentMethod = (ov?.paymentMethod ?? raw.paymentMethod ?? '').trim();
+      const paymentMethod = normalizeAmazonPaymentMethod(
+        ov?.paymentMethod ?? raw.paymentMethod ?? ''
+      );
       const status =
         ov && 'status' in ov
           ? normalizeAmazonStatus(ov.status)

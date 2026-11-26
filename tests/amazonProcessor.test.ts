@@ -4,6 +4,7 @@ import {
   buildAmazonDuplicateKey,
   buildAmazonUniqueId,
   isValid12DigitAmazonUniqueId,
+  normalizeAmazonPaymentMethod,
   normalizeAmazonStatus,
   processScannedAmazonFiles,
 } from '../src/utils/amazonProcessor.ts';
@@ -178,4 +179,24 @@ test('runDeterministicAmazonCategorizer classifies Item Description against Look
   );
   assert.equal(histMatch?.category, 'Food');
   assert.equal(histMatch?.method, 'historical-description');
+});
+
+test('normalizeAmazonPaymentMethod shortens Wells Fargo Business Debit to Debit ... XXXX', () => {
+  assert.equal(
+    normalizeAmazonPaymentMethod('Wells Fargo Business Debit Card ending in 1234'),
+    'Debit ... 1234'
+  );
+  assert.equal(
+    normalizeAmazonPaymentMethod('Wells Fargo Business Debit •••• 5678'),
+    'Debit ... 5678'
+  );
+  assert.equal(
+    normalizeAmazonPaymentMethod('Wells Fargo Business Debit ****9012'),
+    'Debit ... 9012'
+  );
+  assert.equal(normalizeAmazonPaymentMethod('Debit ... 1234'), 'Debit ... 1234');
+  assert.equal(normalizeAmazonPaymentMethod('Wells Fargo Business Debit'), 'Debit');
+  assert.equal(normalizeAmazonPaymentMethod('Amazon Gift Card'), 'Amazon Gift Card');
+  assert.equal(normalizeAmazonPaymentMethod('credit/debit'), 'credit/debit');
+  assert.equal(normalizeAmazonPaymentMethod(''), '');
 });

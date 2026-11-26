@@ -21,6 +21,7 @@ export const CANONICAL_EXPENSE_HEADERS = [
   'Recon Source',
   'Recon Source_ID',
   'Is_Recon',
+  'Notes',
 ] as const;
 
 function normalizeIsRecon(raw: unknown): 'Yes' | 'No' {
@@ -406,7 +407,8 @@ type ExpenseFieldKey =
   | 'paymentMode'
   | 'reconSource'
   | 'reconSourceId'
-  | 'isRecon';
+  | 'isRecon'
+  | 'notes';
 
 const HEADER_TO_FIELD: Record<string, ExpenseFieldKey> = {
   expid: 'expId',
@@ -429,6 +431,13 @@ const HEADER_TO_FIELD: Record<string, ExpenseFieldKey> = {
   reconsource: 'reconSource',
   reconsourceid: 'reconSourceId',
   isrecon: 'isRecon',
+  notes: 'notes',
+  note: 'notes',
+  vendor: 'notes',
+  supplier: 'notes',
+  suppliervendor: 'notes',
+  vendorname: 'notes',
+  suppliername: 'notes',
 };
 
 function buildColumnFieldMap(headers: string[]): Map<ExpenseFieldKey, number> {
@@ -446,13 +455,15 @@ function buildColumnFieldMap(headers: string[]): Map<ExpenseFieldKey, number> {
 function serializeExpenseRow(
   record: ExpenseRecord,
   columnHeaders: string[],
-  isReconColIndex: number = 11
+  isReconColIndex: number = 11,
+  notesColIndex: number = 12
 ): Array<string | number> {
   const fieldToIdx = buildColumnFieldMap(columnHeaders);
   const length = Math.max(
     columnHeaders.length,
     CANONICAL_EXPENSE_HEADERS.length,
-    isReconColIndex + 1
+    isReconColIndex + 1,
+    notesColIndex + 1
   );
   const row: Array<string | number> = record.rawRowValues
     ? [...record.rawRowValues]
@@ -481,6 +492,7 @@ function serializeExpenseRow(
   setField('reconSource', record.reconSource);
   setField('reconSourceId', record.reconSourceId);
   setField('isRecon', record.isRecon || 'No', isReconColIndex);
+  setField('notes', (record.notes ?? '').trim(), notesColIndex);
 
   return row;
 }
@@ -580,8 +592,20 @@ export async function fetchExpenseWorkspace(
 
   const fieldIdx = buildColumnFieldMap(columnHeaders);
   const hasIsReconHeader = needsHeader ? true : fieldIdx.has('isRecon');
-  const isReconColIndex =
-    fieldIdx.get('isRecon') ?? Math.max(columnHeaders.length, 11);
+  const hasNotesHeader = needsHeader ? true : fieldIdx.has('notes');
+
+  const usedExtra = new Set<number>();
+  if (fieldIdx.has('isRecon')) usedExtra.add(fieldIdx.get('isRecon')!);
+  if (fieldIdx.has('notes')) usedExtra.add(fieldIdx.get('notes')!);
+  const allocExtraIdx = (minIdx: number): number => {
+    let idx = Math.max(columnHeaders.length, minIdx);
+    while (usedExtra.has(idx)) idx++;
+    usedExtra.add(idx);
+    return idx;
+  };
+
+  const isReconColIndex = fieldIdx.get('isRecon') ?? allocExtraIdx(11);
+  const notesColIndex = fieldIdx.get('notes') ?? allocExtraIdx(12);
   const startRowIdx = needsHeader ? 0 : 1;
 
   const records: ExpenseRecord[] = [];
@@ -621,6 +645,7 @@ export async function fetchExpenseWorkspace(
     const rawIsRecon = hasIsReconHeader ? readStr('isRecon', isReconColIndex) : '';
     const isRecon: 'Yes' | 'No' =
       rawIsRecon !== '' ? normalizeIsRecon(rawIsRecon) : 'No';
+    const notes = hasNotesHeader ? readStr('notes', notesColIndex) : '';
 
     // Skip rows missing basic identifiable data
     if (!rawExpId && !rawDate && amount === null && !description) {
@@ -645,6 +670,7 @@ export async function fetchExpenseWorkspace(
       reconSource,
       reconSourceId,
       isRecon,
+      notes,
       rawRowValues: row,
       sourceOrigin: 'sheet',
     });
@@ -685,6 +711,8 @@ export async function fetchExpenseWorkspace(
       needsHeader,
       hasIsReconHeader,
       isReconColIndex,
+      hasNotesHeader,
+      notesColIndex,
       columnHeaders,
       lookUpTabName,
       catSubcatTabName,
@@ -728,27 +756,51 @@ export async function fetchExpenseCategories(
   return parseLookUpTab(resp.values ?? []).categories;
 }
 
-async function ensureExpenseIsReconHeader(
+async function ensureExpenseExtraHeaders(
   accessToken: string,
-  meta: ExpenseSheetMeta
-): Promise<void> {
-  if (!meta.ledgerTabExists || meta.needsHeader || meta.hasIsReconHeader) return;
+  meta: ExpenseSheetMeta,
+  options: { ensureIsRecon?: boolean; ensureNotes?: boolean }
+): Promise<ExpenseSheetMeta> {
+  if (!meta.ledgerTabExists || meta.needsHeader) return meta;
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
-  const colA1 = colIndexToA1(meta.isReconColIndex);
-  const headerRange = encodeURIComponent(`${safeTab}!${colA1}1`);
+  const data: Array<{ range: string; values: string[][] }> = [];
+  let nextMeta = meta;
+
+  if (options.ensureIsRecon && !meta.hasIsReconHeader) {
+    const colA1 = colIndexToA1(meta.isReconColIndex);
+    data.push({
+      range: `${safeTab}!${colA1}1`,
+      values: [['Is_Recon']],
+    });
+    nextMeta = { ...nextMeta, hasIsReconHeader: true };
+  }
+
+  if (options.ensureNotes && !meta.hasNotesHeader) {
+    const colA1 = colIndexToA1(meta.notesColIndex);
+    data.push({
+      range: `${safeTab}!${colA1}1`,
+      values: [['Notes']],
+    });
+    nextMeta = { ...nextMeta, hasNotesHeader: true };
+  }
+
+  if (data.length === 0) return meta;
+
   await sheetsFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
       meta.spreadsheetId
-    )}/values/${headerRange}?valueInputOption=USER_ENTERED`,
+    )}/values:batchUpdate`,
     accessToken,
     {
-      method: 'PUT',
+      method: 'POST',
       body: JSON.stringify({
-        majorDimension: 'ROWS',
-        values: [['Is_Recon']],
+        valueInputOption: 'USER_ENTERED',
+        data,
       }),
     }
   );
+
+  return nextMeta;
 }
 
 export async function appendExpenseRecords(
@@ -763,6 +815,7 @@ export async function appendExpenseRecords(
     needsHeader,
     columnHeaders,
     isReconColIndex,
+    notesColIndex,
   } = meta;
 
   if (!ledgerTabExists) {
@@ -787,7 +840,10 @@ export async function appendExpenseRecords(
       }
     );
   } else {
-    await ensureExpenseIsReconHeader(accessToken, meta);
+    await ensureExpenseExtraHeaders(accessToken, meta, {
+      ensureIsRecon: true,
+      ensureNotes: true,
+    });
   }
 
   const rowsToWrite: Array<Array<string | number>> = [];
@@ -796,7 +852,9 @@ export async function appendExpenseRecords(
   }
 
   for (const record of records) {
-    rowsToWrite.push(serializeExpenseRow(record, columnHeaders, isReconColIndex));
+    rowsToWrite.push(
+      serializeExpenseRow(record, columnHeaders, isReconColIndex, notesColIndex)
+    );
   }
 
   if (rowsToWrite.length > 0) {
@@ -834,11 +892,24 @@ export async function updateExpenseRecord(
     throw new Error('Cannot update an expense record that has not been saved to Google Sheets.');
   }
 
-  await ensureExpenseIsReconHeader(accessToken, meta);
+  await ensureExpenseExtraHeaders(accessToken, meta, {
+    ensureIsRecon: true,
+    ensureNotes: true,
+  });
 
-  const serializedRow = serializeExpenseRow(record, meta.columnHeaders, meta.isReconColIndex);
+  const serializedRow = serializeExpenseRow(
+    record,
+    meta.columnHeaders,
+    meta.isReconColIndex,
+    meta.notesColIndex
+  );
   const endCol = colIndexToA1(
-    Math.max(serializedRow.length, meta.columnHeaders.length, meta.isReconColIndex + 1) - 1
+    Math.max(
+      serializedRow.length,
+      meta.columnHeaders.length,
+      meta.isReconColIndex + 1,
+      meta.notesColIndex + 1
+    ) - 1
   );
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
   const range = encodeURIComponent(
@@ -870,7 +941,7 @@ export async function updateExpenseIsRecon(
     throw new Error('Cannot update Is_Recon for an unsaved expense record.');
   }
 
-  await ensureExpenseIsReconHeader(accessToken, meta);
+  await ensureExpenseExtraHeaders(accessToken, meta, { ensureIsRecon: true });
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
   const colA1 = colIndexToA1(meta.isReconColIndex);
   const range = encodeURIComponent(`${safeTab}!${colA1}${sheetRowNumber}`);
@@ -888,6 +959,52 @@ export async function updateExpenseIsRecon(
       }),
     }
   );
+}
+
+export async function batchUpdateExpenseNotes(
+  accessToken: string,
+  meta: ExpenseSheetMeta,
+  updates: Array<{ sheetRowNumber: number; notes: string }>
+): Promise<number> {
+  if (updates.length === 0 && meta.hasNotesHeader) return 0;
+
+  await ensureExpenseExtraHeaders(accessToken, meta, { ensureNotes: true });
+
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const notesColA1 = colIndexToA1(meta.notesColIndex);
+  const data: Array<{ range: string; values: string[][] }> = [];
+
+  let updatedRowCount = 0;
+  for (const upd of updates) {
+    if (!upd.sheetRowNumber || upd.sheetRowNumber < 1) continue;
+    data.push({
+      range: `${safeTab}!${notesColA1}${upd.sheetRowNumber}`,
+      values: [[upd.notes]],
+    });
+    updatedRowCount++;
+  }
+
+  if (data.length === 0) return 0;
+
+  const CHUNK_SIZE = 1000;
+  for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+    const chunk = data.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'USER_ENTERED',
+          data: chunk,
+        }),
+      }
+    );
+  }
+
+  return updatedRowCount;
 }
 
 export interface ExpenseReconUpdate {

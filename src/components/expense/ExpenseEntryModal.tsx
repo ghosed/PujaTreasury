@@ -11,7 +11,11 @@ import {
 } from 'lucide-react';
 import { ExpenseLookups, ExpenseRecord } from '../../types/expense';
 import { AllocationSummary, ReconLink } from '../../types/reconciliation';
-import { generateManualExpenseId, getSubCategoryOptions } from '../../utils/expenseProcessor';
+import {
+  extractExpenseVendorNotes,
+  generateManualExpenseId,
+  getSubCategoryOptions,
+} from '../../utils/expenseProcessor';
 import {
   bankEntryKey,
   fromCents,
@@ -79,6 +83,8 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
   const [reconSource, setReconSource] = useState('');
   const [reconSourceId, setReconSourceId] = useState('');
   const [isRecon, setIsRecon] = useState<'Yes' | 'No'>('No');
+  const [notes, setNotes] = useState('');
+  const [notesManuallyEdited, setNotesManuallyEdited] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   // Add-link picker state
@@ -112,6 +118,8 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       setReconSource(initialRecord.reconSource);
       setReconSourceId(initialRecord.reconSourceId);
       setIsRecon(initialRecord.isRecon === 'Yes' ? 'Yes' : 'No');
+      setNotes(initialRecord.notes ?? '');
+      setNotesManuallyEdited(true);
     } else {
       const generatedId = generateManualExpenseId(existingIds);
       const today = new Date().toISOString().slice(0, 10);
@@ -131,6 +139,8 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       setReconSource('');
       setReconSourceId('');
       setIsRecon('No');
+      setNotes('');
+      setNotesManuallyEdited(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, mode, initialRecord?.expId]);
@@ -408,6 +418,7 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
       reconSource: reconSource.trim(),
       reconSourceId: reconSourceId.trim(),
       isRecon: isIsReconLocked ? lockedIsReconValue : isRecon,
+      notes: notes.trim(),
       rawRowValues: mode === 'edit' ? initialRecord?.rawRowValues : undefined,
       sourceOrigin:
         mode === 'edit' && initialRecord ? initialRecord.sourceOrigin : 'manual',
@@ -819,7 +830,13 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
                   id="exp-desc"
                   type="text"
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => {
+                    const nextDesc = e.target.value;
+                    setDescription(nextDesc);
+                    if (mode === 'create' && !notesManuallyEdited) {
+                      setNotes(extractExpenseVendorNotes(nextDesc));
+                    }
+                  }}
                   placeholder="Vendor, item, or expense details..."
                   required
                   className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
@@ -1000,6 +1017,40 @@ export const ExpenseEntryModal: React.FC<ExpenseEntryModalProps> = ({
                   <option value="No">No</option>
                   <option value="Yes">Yes</option>
                 </select>
+              </div>
+
+              <div className="sm:col-span-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="exp-notes" className="block text-xs font-medium text-slate-700">
+                    Notes{' '}
+                    <span className="font-normal text-slate-400">
+                      (Supplier / Vendor name)
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const detected = extractExpenseVendorNotes(description);
+                      setNotes(detected);
+                      setNotesManuallyEdited(true);
+                    }}
+                    disabled={!description.trim()}
+                    className="text-[11px] font-medium text-teal-700 hover:text-teal-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Detect from Description
+                  </button>
+                </div>
+                <input
+                  id="exp-notes"
+                  type="text"
+                  value={notes}
+                  onChange={(e) => {
+                    setNotes(e.target.value);
+                    setNotesManuallyEdited(true);
+                  }}
+                  placeholder="e.g., Amazon, Home Depot, Costco..."
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+                />
               </div>
             </div>
           </div>

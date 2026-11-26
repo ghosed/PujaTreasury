@@ -3,6 +3,7 @@ import type {
   AmazonOrderStatus,
   RawExtractedAmazonItem,
 } from '../src/types/amazon.ts';
+import { normalizeAmazonPaymentMethod } from '../src/utils/amazonProcessor.ts';
 
 const DEFAULT_MODEL = 'gemini-4-hydrogen';
 
@@ -187,7 +188,7 @@ For EACH line item, extract these 9 fields accurately. IMPORTANT: If a field is 
 5. itemPrice: Unit/item price as a numeric dollar value (e.g., 29.99) if explicitly shown on the line item (or equal to line price when explicitly printed). If NOT shown on an order summary screenshot (only order TOTAL is shown), leave as null.
 6. total: Dollar total for the line item if itemized (e.g. invoice "Total" column), or the order "TOTAL" if single-item. If an order summary screenshot shows multiple items and ONLY one order-level TOTAL (no per-item prices/totals), put the order-level TOTAL on the FIRST item of that order and null on the remaining items so the order total is not duplicated across rows.
 7. shippedTo: Recipient name from "SHIP TO" or shipping address block (e.g., "Sandip Dasgupta"), "" if not present in the document.
-8. paymentMethod: Payment method if visible (e.g., "credit/debit", "Visa ending in 1234", "Amazon Gift Card"). Strip leading "Paid via " if helpful (e.g., "Paid via credit/debit" -> "credit/debit"), "" if not visible.
+8. paymentMethod: Payment method if visible (e.g., "credit/debit", "Visa ending in 1234", "Amazon Gift Card"). Strip leading "Paid via " if helpful (e.g., "Paid via credit/debit" -> "credit/debit"), "" if not visible. If the payment method is a Wells Fargo Business Debit card, shorten it to "Debit ... XXXX" where XXXX are the last 4 digits (or "Debit" if digits are not shown).
 9. status: Must be one of "Ordered", "Delivered", "Cancelled", "Returned", or "" if status is not indicated.
    - "Arriving ...", "Shipped", "Order placed", "Out for delivery" -> "Ordered"
    - "Delivered ..." -> "Delivered"
@@ -294,7 +295,7 @@ For EACH line item, extract these 9 fields accurately. IMPORTANT: If a field is 
         itemPrice: parseOptionalNumber(item.itemPrice, 2),
         total: parseOptionalNumber(item.total, 2),
         shippedTo: String(item.shippedTo ?? '').trim(),
-        paymentMethod: String(item.paymentMethod ?? '').trim(),
+        paymentMethod: normalizeAmazonPaymentMethod(String(item.paymentMethod ?? '')),
         status: normalizeStatusOutput(item.status),
       };
     })

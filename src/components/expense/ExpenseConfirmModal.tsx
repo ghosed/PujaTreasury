@@ -20,6 +20,7 @@ const COMPARE_FIELDS: Array<{ key: keyof ExpenseRecord; label: string }> = [
   { key: 'category', label: 'Category' },
   { key: 'subCategory', label: 'Sub Category' },
   { key: 'description', label: 'Description' },
+  { key: 'notes', label: 'Notes' },
   { key: 'status', label: 'Status' },
   { key: 'puja', label: 'Puja' },
   { key: 'paymentMode', label: 'Payment Mode' },
@@ -173,6 +174,9 @@ export const ExpenseConfirmModal: React.FC<ExpenseConfirmModalProps> = ({
                           <th className="border-b border-slate-200 px-3 py-2 font-medium">
                             Description
                           </th>
+                          <th className="border-b border-slate-200 px-3 py-2 font-medium">
+                            Notes
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
@@ -194,6 +198,9 @@ export const ExpenseConfirmModal: React.FC<ExpenseConfirmModalProps> = ({
                             <td className="px-3 py-2 whitespace-nowrap">{rec.status}</td>
                             <td className="max-w-[200px] truncate px-3 py-2 text-slate-600">
                               {rec.description}
+                            </td>
+                            <td className="max-w-[140px] truncate px-3 py-2 text-slate-700">
+                              {rec.notes || '—'}
                             </td>
                           </tr>
                         ))}
@@ -247,6 +254,10 @@ export const ExpenseConfirmModal: React.FC<ExpenseConfirmModalProps> = ({
                 <div className="col-span-2 sm:col-span-3">
                   <dt className="text-slate-500">Description</dt>
                   <dd className="mt-0.5 text-slate-900">{action.record.description}</dd>
+                </div>
+                <div>
+                  <dt className="text-slate-500">Notes (Vendor / Supplier)</dt>
+                  <dd className="mt-0.5 text-slate-900">{action.record.notes || '—'}</dd>
                 </div>
                 <div>
                   <dt className="text-slate-500">Puja</dt>

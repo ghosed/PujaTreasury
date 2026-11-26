@@ -28,12 +28,14 @@ import {
 import { parseCsvText } from '../../utils/csvParser';
 import {
   detectExpenseCsvMapping,
+  findExpenseNotesBackfillUpdates,
   processExpenseCsvs,
 } from '../../utils/expenseProcessor';
 import { ReconLink } from '../../types/reconciliation';
 import { AccountType } from '../../types/statement';
 import {
   appendExpenseRecords,
+  batchUpdateExpenseNotes,
   CANONICAL_EXPENSE_HEADERS,
   EXPENSE_SPREADSHEET_ID,
   fetchExpenseWorkspace,
@@ -148,6 +150,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
   // Confirmation & Sync state
   const [pendingMutation, setPendingMutation] = useState<ExpenseMutationAction | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isApplyingNotesBackfill, setIsApplyingNotesBackfill] = useState(false);
   const [updatingReconExpId, setUpdatingReconExpId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -701,6 +704,52 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
     }
   };
 
+  const notesBackfillUpdates = useMemo(
+    () => findExpenseNotesBackfillUpdates(sheetRecords),
+    [sheetRecords]
+  );
+
+  const handleApplyExpenseNotesBackfill = async () => {
+    if (!sheetMeta) return;
+    const needsNotesCol = hasLoadedSheet && !sheetMeta.hasNotesHeader;
+    if (notesBackfillUpdates.length === 0 && !needsNotesCol) return;
+
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      setErrorMessage('Sign in with Google to update Notes in Expense_Ledger.');
+      return;
+    }
+
+    setIsApplyingNotesBackfill(true);
+    setErrorMessage(null);
+    try {
+      const updatedCount = await batchUpdateExpenseNotes(
+        token,
+        sheetMeta,
+        notesBackfillUpdates
+      );
+      await loadWorkspace(token);
+      setStatusMessage(
+        updatedCount > 0
+          ? `Populated vendor/supplier Notes for ${updatedCount.toLocaleString()} row(s) in "${sheetMeta.ledgerTabName}".`
+          : `Initialized the "Notes" column header in "${sheetMeta.ledgerTabName}".`
+      );
+    } catch (err) {
+      if (err instanceof SheetsApiError && (err.status === 401 || err.status === 403)) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : 'Failed to update Notes in Expense_Ledger.'
+        );
+      }
+    } finally {
+      setIsApplyingNotesBackfill(false);
+    }
+  };
+
   // Dynamic filter option lists
   const filterOptions = useMemo(() => {
     const mergeUnique = (a: string[], b: string[]) => {
@@ -863,7 +912,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             (alloc ? alloc.remainingCents === queryAmountCents : false));
         if (!matchesExactAmount) {
           const hay =
-            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
+            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.notes ?? ''} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
       }
@@ -974,7 +1023,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             (alloc ? alloc.remainingCents === queryAmountCents : false));
         if (!matchesExactAmount) {
           const hay =
-            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
+            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.notes ?? ''} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId}`.toLowerCase();
           if (!hay.includes(q)) continue;
         }
       }
@@ -1039,7 +1088,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             (alloc ? alloc.remainingCents === queryAmountCents : false));
         if (!matchesExactAmount) {
           const hay =
-            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
+            `${rec.expId} ${rec.date} ${rec.category} ${rec.subCategory} ${rec.description} ${rec.notes ?? ''} ${rec.status} ${rec.puja} ${rec.paymentMode} ${rec.reconSource} ${rec.reconSourceId} ${rec.isRecon}`.toLowerCase();
           if (!hay.includes(q)) continue;
         }
       }
@@ -1114,6 +1163,7 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
           rec.reconSource,
           rec.reconSourceId,
           rec.isRecon || 'No',
+          rec.notes ?? '',
         ]
           .map(escapeCsv)
           .join(',')
@@ -1953,6 +2003,47 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
             </div>
           )}
 
+          {hasLoadedSheet &&
+            sheetMeta &&
+            (!sheetMeta.hasNotesHeader || notesBackfillUpdates.length > 0) && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle
+                    className="h-4 w-4 shrink-0 text-amber-700"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {!sheetMeta.hasNotesHeader && notesBackfillUpdates.length === 0 ? (
+                      <>
+                        The <strong>Notes</strong> column is not yet initialized in{' '}
+                        <strong>{sheetMeta.ledgerTabName}</strong>.
+                      </>
+                    ) : (
+                      <>
+                        <strong>{notesBackfillUpdates.length.toLocaleString()}</strong> existing
+                        row(s) in <strong>{sheetMeta.ledgerTabName}</strong> can be populated with
+                        detected supplier/vendor names in the <strong>Notes</strong> column.
+                      </>
+                    )}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleApplyExpenseNotesBackfill()}
+                  disabled={isApplyingNotesBackfill || needsAuth}
+                  className="rounded-md bg-amber-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-900 disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
+                >
+                  {isApplyingNotesBackfill
+                    ? 'Updating Notes...'
+                    : notesBackfillUpdates.length > 0
+                      ? `Fill Notes for ${notesBackfillUpdates.length} Sheet Row${
+                          notesBackfillUpdates.length === 1 ? '' : 's'
+                        }`
+                      : 'Initialize Notes Column'}
+                </button>
+              </div>
+            )}
+
           {/* Expense Ledger Table Surface */}
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
             {/* Filter Toolbar */}
@@ -1990,8 +2081,8 @@ export const ExpenseModule: React.FC<ExpenseModuleProps> = ({
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search Exp_ID, exact amount, description..."
-                    className="w-44 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
+                    placeholder="Search Exp_ID, exact amount, notes, description..."
+                    className="w-48 rounded-md border border-slate-300 bg-white py-1.5 pr-3 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-700 focus:outline-none"
                   />
                 </div>
 

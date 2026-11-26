@@ -27,6 +27,7 @@ export const ExpenseCsvMappingModal: React.FC<ExpenseCsvMappingModalProps> = ({
     paymentModeCol: '',
     reconSourceCol: '',
     reconSourceIdCol: '',
+    notesCol: '',
   });
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -228,6 +229,14 @@ export const ExpenseCsvMappingModal: React.FC<ExpenseCsvMappingModalProps> = ({
               (v) => setMapping((m) => ({ ...m, reconSourceIdCol: v })),
               false,
               'None / Optional'
+            )}
+            {renderSelect(
+              'exp-map-notes',
+              'Notes (Supplier / Vendor)',
+              mapping.notesCol ?? '',
+              (v) => setMapping((m) => ({ ...m, notesCol: v })),
+              false,
+              'Auto-detect from Description if absent'
             )}
           </div>
 

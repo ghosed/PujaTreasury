@@ -198,6 +198,7 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
               </th>
               <th className="px-2 py-2 font-medium whitespace-nowrap">Status</th>
               <th className="px-2 py-2 font-medium">Description</th>
+              <th className="px-2 py-2 font-medium whitespace-nowrap">Notes</th>
               <th className="py-2 pl-2 pr-3 font-medium whitespace-nowrap">
                 Recon Source / ID
               </th>
@@ -355,6 +356,16 @@ export const ExpenseLedgerGrid: React.FC<ExpenseLedgerGridProps> = ({
                         )}
                       </div>
                     )}
+                  </td>
+                  <td className="max-w-[180px] px-2 py-2">
+                    <div
+                      className={`truncate ${
+                        rec.notes ? 'font-medium text-slate-700' : 'text-slate-400'
+                      }`}
+                      title={rec.notes || undefined}
+                    >
+                      {rec.notes || '—'}
+                    </div>
                   </td>
                   <td className="max-w-[180px] py-2 pl-2 pr-3">
                     <div className="truncate text-slate-700" title={rec.reconSource}>

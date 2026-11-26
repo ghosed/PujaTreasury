@@ -15,6 +15,8 @@ export interface ExpenseRecord {
   reconSourceId: string;
   /** Reconciliation status (`Is_Recon` column: "Yes" or "No") */
   isRecon: 'Yes' | 'No';
+  /** Optional Notes / Supplier / Vendor field (`Notes` column) */
+  notes?: string;
   /** Raw row cells preserved from Google Sheet so updates keep extra columns intact */
   rawRowValues?: Array<string | number>;
   /** Local UI state */
@@ -39,6 +41,8 @@ export interface ExpenseSheetMeta {
   needsHeader: boolean;
   hasIsReconHeader: boolean;
   isReconColIndex: number;
+  hasNotesHeader: boolean;
+  notesColIndex: number;
   /** Actual header row from the Expense Ledger tab (or canonical headers if empty) */
   columnHeaders: string[];
   lookUpTabName: string | null;
@@ -58,6 +62,7 @@ export interface ExpenseCsvColumnMapping {
   paymentModeCol: string;
   reconSourceCol: string;
   reconSourceIdCol: string;
+  notesCol?: string;
 }
 
 export interface UploadedExpenseCsv {

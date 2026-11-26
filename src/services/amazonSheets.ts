@@ -9,6 +9,7 @@ import {
   buildAmazonDuplicateKey,
   buildAmazonUniqueId,
   normalizeAmazonDate,
+  normalizeAmazonPaymentMethod,
   normalizeAmazonStatus,
   parseOptionalAmazonNumber,
 } from '../utils/amazonProcessor';
@@ -232,7 +233,7 @@ function serializeAmazonRow(
     6
   );
   setField('shippedTo', record.shippedTo, 7);
-  setField('paymentMethod', record.paymentMethod, 8);
+  setField('paymentMethod', normalizeAmazonPaymentMethod(record.paymentMethod), 8);
   setField('status', record.status, 9);
   setField('isRecon', record.isRecon || 'No', meta.isReconColIndex);
   setField('category', record.category || '', meta.categoryColIndex);
@@ -355,7 +356,7 @@ export async function fetchAmazonLedger(
     const itemPrice = parseOptionalAmazonNumber(row[fieldIdx.get('itemPrice') ?? 5], 2);
     const total = parseOptionalAmazonNumber(row[fieldIdx.get('total') ?? 6], 2);
     const shippedTo = readStr('shippedTo', 7);
-    const paymentMethod = readStr('paymentMethod', 8);
+    const paymentMethod = normalizeAmazonPaymentMethod(readStr('paymentMethod', 8));
     const status: AmazonOrderStatus = normalizeAmazonStatus(readStr('status', 9));
 
     if (

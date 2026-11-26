@@ -840,6 +840,44 @@ export async function updateAmazonExpId(
   );
 }
 
+export async function batchUpdateAmazonExpIds(
+  accessToken: string,
+  meta: AmazonSheetMeta,
+  updates: Array<{ sheetRowNumber: number; expId: string }>
+): Promise<number> {
+  const validUpdates = updates.filter(
+    (u) => Number.isFinite(u.sheetRowNumber) && u.sheetRowNumber >= 1
+  );
+  if (validUpdates.length === 0) return 0;
+
+  await ensureAmazonExtraHeaders(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const colA1 = colIndexToA1(meta.expIdColIndex);
+
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < validUpdates.length; i += CHUNK_SIZE) {
+    const chunk = validUpdates.slice(i, i + CHUNK_SIZE);
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'RAW',
+          data: chunk.map((u) => ({
+            range: `${safeTab}!${colA1}${u.sheetRowNumber}`,
+            values: [[u.expId.trim()]],
+          })),
+        }),
+      }
+    );
+  }
+
+  return validUpdates.length;
+}
+
 export async function updateAmazonBankId(
   accessToken: string,
   meta: AmazonSheetMeta,
@@ -868,6 +906,53 @@ export async function updateAmazonBankId(
       }),
     }
   );
+}
+
+export async function batchUpdateAmazonBankRecon(
+  accessToken: string,
+  meta: AmazonSheetMeta,
+  updates: Array<{ sheetRowNumber: number; bankId: string; isRecon: 'Yes' | 'No' }>
+): Promise<number> {
+  const validUpdates = updates.filter(
+    (u) => Number.isFinite(u.sheetRowNumber) && u.sheetRowNumber >= 1
+  );
+  if (validUpdates.length === 0) return 0;
+
+  await ensureAmazonExtraHeaders(accessToken, meta);
+  const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;
+  const bankColA1 = colIndexToA1(meta.bankIdColIndex);
+  const isReconColA1 = colIndexToA1(meta.isReconColIndex);
+
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < validUpdates.length; i += CHUNK_SIZE) {
+    const chunk = validUpdates.slice(i, i + CHUNK_SIZE);
+    const data: Array<{ range: string; values: string[][] }> = [];
+    for (const u of chunk) {
+      data.push({
+        range: `${safeTab}!${bankColA1}${u.sheetRowNumber}`,
+        values: [[u.bankId.trim()]],
+      });
+      data.push({
+        range: `${safeTab}!${isReconColA1}${u.sheetRowNumber}`,
+        values: [[u.isRecon]],
+      });
+    }
+    await sheetsFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
+        meta.spreadsheetId
+      )}/values:batchUpdate`,
+      accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          valueInputOption: 'RAW',
+          data,
+        }),
+      }
+    );
+  }
+
+  return validUpdates.length;
 }
 
 export async function deleteAmazonRows(

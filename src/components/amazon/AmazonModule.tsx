@@ -9,6 +9,8 @@ import {
   FileImage,
   FileSpreadsheet,
   FileText,
+  Landmark,
+  Link2,
   Package,
   Plus,
   RefreshCw,
@@ -33,10 +35,16 @@ import {
   processScannedAmazonFiles,
 } from '../../utils/amazonProcessor';
 import { categorizeAmazonHybrid } from '../../utils/amazonCategorizer';
+import {
+  matchAmazonOrdersWithBank,
+  matchAmazonOrdersWithExpenses,
+} from '../../utils/amazonExpenseRecon';
 import { parseExactAmountQueryCents, toCents } from '../../utils/reconAllocations';
 import {
   AMAZON_SPREADSHEET_ID,
+  batchUpdateAmazonBankRecon,
   batchUpdateAmazonCategories,
+  batchUpdateAmazonExpIds,
   batchUpdateAmazonUniqueIds,
   CANONICAL_AMAZON_HEADERS,
   deleteAmazonRows,
@@ -168,6 +176,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
   const [updatingCategoryKey, setUpdatingCategoryKey] = useState<string | null>(null);
   const [isAutoCategorizing, setIsAutoCategorizing] = useState(false);
   const [isApplyingBatchCategories, setIsApplyingBatchCategories] = useState(false);
+  const [isAutoReconExpenses, setIsAutoReconExpenses] = useState(false);
+  const [isAutoReconBank, setIsAutoReconBank] = useState(false);
   const [categorizeReviewState, setCategorizeReviewState] = useState<{
     isOpen: boolean;
     items: AmazonCategorizeReviewItem[];
@@ -1251,6 +1261,202 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     }
   };
 
+  const handleAutoReconWithExpenses = async () => {
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      return;
+    }
+
+    setIsAutoReconExpenses(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const [amazonWorkspace, expenseWorkspace] = await Promise.all([
+        fetchAmazonLedger(token, AMAZON_SPREADSHEET_ID),
+        fetchExpenseWorkspace(token, EXPENSE_SPREADSHEET_ID),
+      ]);
+
+      let activeMeta = amazonWorkspace.meta;
+      if (
+        activeMeta.ledgerTabExists &&
+        !activeMeta.needsHeader &&
+        (!activeMeta.hasIsReconHeader ||
+          !activeMeta.hasCategoryHeader ||
+          !activeMeta.hasExpIdHeader ||
+          !activeMeta.hasBankIdHeader)
+      ) {
+        activeMeta = await ensureAmazonExtraHeaders(token, activeMeta);
+      }
+
+      const plan = matchAmazonOrdersWithExpenses(
+        amazonWorkspace.records,
+        expenseWorkspace.records
+      );
+
+      if (plan.rowUpdates.length === 0) {
+        setSheetMeta(activeMeta);
+        setSheetRecords(amazonWorkspace.records);
+        setExistingIds(amazonWorkspace.existingIds);
+        setExistingDuplicateKeys(amazonWorkspace.existingDuplicateKeys);
+        setExpenseRecords(expenseWorkspace.records);
+        setHasLoadedSheet(true);
+
+        if (plan.eligibleExpenseCount === 0) {
+          setStatusMessage(
+            'No Expense Ledger records with "Amazon" in Notes were found to reconcile.'
+          );
+        } else if (plan.eligibleOrderCount === 0 && plan.alreadyMatchedOrderCount > 0) {
+          setStatusMessage(
+            `All ${plan.alreadyMatchedOrderCount} Amazon Order ${
+              plan.alreadyMatchedOrderCount === 1 ? 'ID already has' : 'IDs already have'
+            } Exp_ID assigned.`
+          );
+        } else {
+          setStatusMessage(
+            `No new Amazon Order ID amount matches found across ${plan.eligibleExpenseCount} Expense ${
+              plan.eligibleExpenseCount === 1 ? 'record' : 'records'
+            } with "Amazon" in Notes.`
+          );
+        }
+        return;
+      }
+
+      const updatedRowsCount = await batchUpdateAmazonExpIds(
+        token,
+        activeMeta,
+        plan.rowUpdates.map((u) => ({
+          sheetRowNumber: u.sheetRowNumber,
+          expId: u.expId,
+        }))
+      );
+
+      await loadAmazonLedger(token);
+      setStatusMessage(
+        `Matched ${plan.matchedOrders.length} Amazon Order ${
+          plan.matchedOrders.length === 1 ? 'ID' : 'IDs'
+        } and updated Exp_ID on ${updatedRowsCount} ${
+          updatedRowsCount === 1 ? 'record' : 'records'
+        } in Amazon_Ledger.`
+      );
+    } catch (err) {
+      if (err instanceof SheetsApiError && err.status === 401) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to auto-reconcile Amazon orders with Expense Ledger.'
+        );
+      }
+    } finally {
+      setIsAutoReconExpenses(false);
+    }
+  };
+
+  const handleAutoReconWithBank = async () => {
+    const token = await getAccessToken();
+    if (!token) {
+      onAuthExpired();
+      return;
+    }
+
+    setIsAutoReconBank(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const [amazonWorkspace, pujaBankRes, regularBankRes] = await Promise.all([
+        fetchAmazonLedger(token, AMAZON_SPREADSHEET_ID),
+        fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Puja'),
+        fetchSheetLedger(token, TARGET_SPREADSHEET_ID, 'Regular'),
+      ]);
+
+      const combinedBank: BankLedgerLookupRecord[] = [
+        ...pujaBankRes.transactions.map((tx) => ({ ...tx, accountTab: 'Puja' as const })),
+        ...regularBankRes.transactions.map((tx) => ({ ...tx, accountTab: 'Regular' as const })),
+      ];
+
+      let activeMeta = amazonWorkspace.meta;
+      if (
+        activeMeta.ledgerTabExists &&
+        !activeMeta.needsHeader &&
+        (!activeMeta.hasIsReconHeader ||
+          !activeMeta.hasCategoryHeader ||
+          !activeMeta.hasExpIdHeader ||
+          !activeMeta.hasBankIdHeader)
+      ) {
+        activeMeta = await ensureAmazonExtraHeaders(token, activeMeta);
+      }
+
+      const plan = matchAmazonOrdersWithBank(amazonWorkspace.records, combinedBank);
+
+      if (plan.rowUpdates.length === 0) {
+        setSheetMeta(activeMeta);
+        setSheetRecords(amazonWorkspace.records);
+        setExistingIds(amazonWorkspace.existingIds);
+        setExistingDuplicateKeys(amazonWorkspace.existingDuplicateKeys);
+        setBankRecords(combinedBank);
+        setHasLoadedSheet(true);
+
+        if (plan.eligibleBankCount === 0) {
+          setStatusMessage(
+            'No Bank Statement Ledger expense records with "Amazon" in Notes were found to reconcile.'
+          );
+        } else if (plan.eligibleOrderCount === 0 && plan.alreadyMatchedOrderCount > 0) {
+          setStatusMessage(
+            `All ${plan.alreadyMatchedOrderCount} Amazon Order ${
+              plan.alreadyMatchedOrderCount === 1 ? 'ID already has' : 'IDs already have'
+            } Bank_ID and Is_Recon assigned.`
+          );
+        } else {
+          setStatusMessage(
+            `No new Amazon Order ID amount matches found across ${plan.eligibleBankCount} Bank Statement expense ${
+              plan.eligibleBankCount === 1 ? 'record' : 'records'
+            } with "Amazon" in Notes.`
+          );
+        }
+        return;
+      }
+
+      const updatedRowsCount = await batchUpdateAmazonBankRecon(
+        token,
+        activeMeta,
+        plan.rowUpdates.map((u) => ({
+          sheetRowNumber: u.sheetRowNumber,
+          bankId: u.bankId,
+          isRecon: u.isRecon,
+        }))
+      );
+
+      await loadAmazonLedger(token);
+      setStatusMessage(
+        `Matched ${plan.matchedOrders.length} Amazon Order ${
+          plan.matchedOrders.length === 1 ? 'ID' : 'IDs'
+        } with Bank Statements and updated Bank_ID & Is_Recon ("Yes") on ${updatedRowsCount} ${
+          updatedRowsCount === 1 ? 'record' : 'records'
+        } in Amazon_Ledger.`
+      );
+    } catch (err) {
+      if (err instanceof SheetsApiError && err.status === 401) {
+        clearCachedToken();
+        onAuthExpired();
+        setErrorMessage('Google session expired. Please sign in again.');
+      } else {
+        setErrorMessage(
+          err instanceof Error
+            ? err.message
+            : 'Failed to auto-reconcile Amazon orders with Bank Statements.'
+        );
+      }
+    } finally {
+      setIsAutoReconBank(false);
+    }
+  };
+
   const removeScannedItemsByRowKeys = useCallback(
     (rowKeysToRemove: Set<string>) => {
       if (rowKeysToRemove.size === 0) return;
@@ -1731,6 +1937,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                   needsAuth ||
                   isLoadingSheet ||
                   isAutoCategorizing ||
+                  isAutoReconExpenses ||
+                  isAutoReconBank ||
                   uncategorizedSheetOrders.length === 0
                 }
                 title="Auto-assign LookUp Expense categories from Item Description for uncategorized AmzOrders rows"
@@ -1743,6 +1951,48 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                 {isAutoCategorizing
                   ? 'Categorizing...'
                   : `Auto-Categorize Uncategorized Orders (${uncategorizedSheetOrders.length})`}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleAutoReconWithExpenses()}
+                disabled={
+                  needsAuth ||
+                  isLoadingSheet ||
+                  isAutoReconExpenses ||
+                  isAutoReconBank ||
+                  isAutoCategorizing ||
+                  sheetRecords.length === 0
+                }
+                title='Match Amazon Order ID totals against Expense Ledger records whose "Notes" contains Amazon and update Exp_ID'
+                className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50/60 px-3.5 py-2 text-xs font-medium text-emerald-800 hover:bg-emerald-100/70 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 whitespace-nowrap shrink-0"
+              >
+                <Link2
+                  className={`h-3.5 w-3.5 ${isAutoReconExpenses ? 'animate-pulse' : ''}`}
+                  aria-hidden="true"
+                />
+                {isAutoReconExpenses ? 'Reconciling Expenses...' : 'Auto Recon with Expenses'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleAutoReconWithBank()}
+                disabled={
+                  needsAuth ||
+                  isLoadingSheet ||
+                  isAutoReconBank ||
+                  isAutoReconExpenses ||
+                  isAutoCategorizing ||
+                  sheetRecords.length === 0
+                }
+                title='Match Amazon Order ID totals against Bank Statement Ledger expense records whose "Notes" contains Amazon and update Bank_ID & Is_Recon'
+                className="inline-flex items-center gap-1.5 rounded-md border border-indigo-300 bg-indigo-50/60 px-3.5 py-2 text-xs font-medium text-indigo-800 hover:bg-indigo-100/70 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 whitespace-nowrap shrink-0"
+              >
+                <Landmark
+                  className={`h-3.5 w-3.5 ${isAutoReconBank ? 'animate-pulse' : ''}`}
+                  aria-hidden="true"
+                />
+                {isAutoReconBank ? 'Reconciling Bank...' : 'Auto Recon with Bank'}
               </button>
 
               <button

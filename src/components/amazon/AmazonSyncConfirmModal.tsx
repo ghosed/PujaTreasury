@@ -19,11 +19,19 @@ export const AmazonSyncConfirmModal: React.FC<AmazonSyncConfirmModalProps> = ({
 
   const canAppend = plan.toAppend.length > 0;
   const previewRows = plan.toAppend.slice(0, 12);
-  const totalValue = plan.toAppend.reduce((sum, r) => {
-    const val =
+  let expenseTotal = 0;
+  let returnIncomeTotal = 0;
+  for (const r of plan.toAppend) {
+    const rawVal =
       r.total ?? (r.itemPrice !== null ? r.itemPrice * (r.quantity ?? 1) : 0);
-    return sum + val;
-  }, 0);
+    const val = Math.abs(rawVal);
+    if (r.status === 'Returned') {
+      returnIncomeTotal += val;
+    } else {
+      expenseTotal += val;
+    }
+  }
+  const originalTotal = expenseTotal + returnIncomeTotal;
 
   return (
     <div
@@ -80,13 +88,30 @@ export const AmazonSyncConfirmModal: React.FC<AmazonSyncConfirmModalProps> = ({
               </div>
             </div>
             <div className="rounded-md border border-slate-200 bg-slate-50 px-3.5 py-2.5">
-              <div className="text-xs text-slate-500">Total Batch Value</div>
+              <div className="text-xs text-slate-500">Total Batch Spend</div>
               <div className="mt-1 font-mono text-lg font-semibold text-slate-900 tabular-nums">
-                {totalValue.toLocaleString('en-US', {
+                {expenseTotal.toLocaleString('en-US', {
                   style: 'currency',
                   currency: 'USD',
                 })}
               </div>
+              {returnIncomeTotal > 0 && (
+                <div className="mt-0.5 text-[11px] text-slate-600 tabular-nums">
+                  Orig{' '}
+                  {originalTotal.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                  })}{' '}
+                  · Return Income{' '}
+                  <span className="font-medium text-emerald-700">
+                    +
+                    {returnIncomeTotal.toLocaleString('en-US', {
+                      style: 'currency',
+                      currency: 'USD',
+                    })}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -94,9 +119,9 @@ export const AmazonSyncConfirmModal: React.FC<AmazonSyncConfirmModalProps> = ({
             <div className="flex items-start gap-2.5 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
               <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
               <span>
-                All scanned items already exist in <strong>{plan.meta.ledgerTabName}</strong>{' '}
-                matching Order #, Order Date, Quantity, Item Description, and Item Price. No
-                duplicate records will be written.
+                All uploaded files match file names already recorded in{' '}
+                <strong>{plan.meta.ledgerTabName}</strong>. No duplicate records will be
+                written.
               </span>
             </div>
           ) : (
@@ -142,24 +167,40 @@ export const AmazonSyncConfirmModal: React.FC<AmazonSyncConfirmModalProps> = ({
                         >
                           {ord.itemDescription || '—'}
                         </td>
-                        <td className="px-3 py-1.5 text-right font-mono text-[11px] whitespace-nowrap tabular-nums">
+                        <td
+                          className={`px-3 py-1.5 text-right font-mono text-[11px] whitespace-nowrap tabular-nums ${
+                            ord.status === 'Returned' ? 'text-emerald-800' : ''
+                          }`}
+                        >
                           {ord.itemPrice !== null
-                            ? ord.itemPrice.toLocaleString('en-US', {
+                            ? Math.abs(ord.itemPrice).toLocaleString('en-US', {
                                 style: 'currency',
                                 currency: 'USD',
                               })
                             : '—'}
                         </td>
-                        <td className="px-3 py-1.5 text-right font-mono text-[11px] font-medium whitespace-nowrap tabular-nums">
+                        <td
+                          className={`px-3 py-1.5 text-right font-mono text-[11px] font-medium whitespace-nowrap tabular-nums ${
+                            ord.status === 'Returned' ? 'text-emerald-800' : 'text-red-700'
+                          }`}
+                        >
                           {ord.total !== null
-                            ? ord.total.toLocaleString('en-US', {
+                            ? `${ord.status === 'Returned' ? '+' : ''}${Math.abs(
+                                ord.total
+                              ).toLocaleString('en-US', {
                                 style: 'currency',
                                 currency: 'USD',
-                              })
+                              })}`
                             : '—'}
                         </td>
-                        <td className="px-3 py-1.5 text-[11px] whitespace-nowrap">
-                          {ord.status || '—'}
+                        <td
+                          className={`px-3 py-1.5 text-[11px] whitespace-nowrap ${
+                            ord.status === 'Returned'
+                              ? 'font-medium text-emerald-800'
+                              : ''
+                          }`}
+                        >
+                          {ord.status === 'Returned' ? 'Returned (Income)' : ord.status || '—'}
                         </td>
                         <td className="max-w-[120px] truncate px-3 py-1.5 text-[11px]">
                           {ord.category || '—'}

@@ -196,6 +196,7 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
     quantity: parsedPreviewQty !== null && parsedPreviewQty > 0 ? parsedPreviewQty : null,
     itemDescription,
     itemPrice: parsedPreviewPrice,
+    status,
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -245,6 +246,7 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
       quantity: safeQty,
       itemDescription: trimmedDesc,
       itemPrice: safePrice,
+      status,
     };
 
     const nextUniqueId = buildAmazonUniqueId(identityArgs);
@@ -475,6 +477,11 @@ export const AmazonEntryModal: React.FC<AmazonEntryModalProps> = ({
                   </option>
                 ))}
               </select>
+              {status === 'Returned' && (
+                <p className="mt-1 text-[11px] text-emerald-700">
+                  Returned items are shown as positive Income rather than an expense.
+                </p>
+              )}
             </div>
 
             <div>

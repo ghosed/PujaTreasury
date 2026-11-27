@@ -383,22 +383,45 @@ export const AmazonGrid: React.FC<AmazonGridProps> = ({
                     </div>
                   </td>
 
-                  <td className="px-2 py-2 text-right font-mono text-[12px] text-slate-700 whitespace-nowrap tabular-nums">
+                  <td
+                    className={`px-2 py-2 text-right font-mono text-[12px] whitespace-nowrap tabular-nums ${
+                      rec.status === 'Returned' ? 'text-emerald-800' : 'text-slate-700'
+                    }`}
+                  >
                     {rec.itemPrice !== null
-                      ? rec.itemPrice.toLocaleString('en-US', {
+                      ? Math.abs(rec.itemPrice).toLocaleString('en-US', {
                           style: 'currency',
                           currency: 'USD',
                         })
                       : '—'}
+                    {rec.status === 'Returned' &&
+                      rec.total === null &&
+                      rec.itemPrice !== null && (
+                        <div className="font-sans text-[10px] text-emerald-700">Income</div>
+                      )}
                   </td>
 
-                  <td className="px-2 py-2 text-right font-mono text-[12px] font-medium text-red-700 whitespace-nowrap tabular-nums">
-                    {rec.total !== null
-                      ? rec.total.toLocaleString('en-US', {
+                  <td
+                    className={`px-2 py-2 text-right font-mono text-[12px] font-medium whitespace-nowrap tabular-nums ${
+                      rec.status === 'Returned' ? 'text-emerald-800' : 'text-red-700'
+                    }`}
+                  >
+                    {rec.total !== null ? (
+                      <>
+                        {rec.status === 'Returned' ? '+' : ''}
+                        {Math.abs(rec.total).toLocaleString('en-US', {
                           style: 'currency',
                           currency: 'USD',
-                        })
-                      : '—'}
+                        })}
+                        {rec.status === 'Returned' && (
+                          <div className="font-sans text-[10px] font-normal text-emerald-700">
+                            Income
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      '—'
+                    )}
                   </td>
 
                   <td className="max-w-[175px] px-2 py-2">

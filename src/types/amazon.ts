@@ -107,10 +107,12 @@ export interface AmazonSheetMeta {
   hasCategoryHeader: boolean;
   hasExpIdHeader: boolean;
   hasBankIdHeader: boolean;
+  hasSourceFileHeader: boolean;
   isReconColIndex: number;
   categoryColIndex: number;
   expIdColIndex: number;
   bankIdColIndex: number;
+  sourceFileColIndex: number;
   columnHeaders: string[];
 }
 

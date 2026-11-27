@@ -126,8 +126,11 @@ interface OrderGroup {
   displayOrderNumber: string;
   orderDate: string;
   activeRows: AmazonOrderRecord[];
+  allNonCancelledRows: AmazonOrderRecord[];
   primaryCents: number;
+  originalWithReturnsCents: number | null;
   repeatedOrderTotalCents: number | null;
+  hasUniqueReturnedItems: boolean;
   existingExpIds: string[];
   existingBankIds: string[];
   categories: Set<string>;
@@ -171,6 +174,88 @@ function computeOrderGroupAmounts(activeRows: AmazonOrderRecord[]): {
   }
 
   return { primaryCents, repeatedOrderTotalCents };
+}
+
+function buildOrderGroupFromRows(
+  normOrder: string,
+  allRows: AmazonOrderRecord[]
+): OrderGroup | null {
+  const allNonCancelledRows = allRows.filter((r) => r.status !== 'Cancelled');
+  const activeRows = allNonCancelledRows.filter((r) => r.status !== 'Returned');
+  const returnedRows = allNonCancelledRows.filter((r) => r.status === 'Returned');
+
+  if (activeRows.length === 0) return null;
+
+  const { primaryCents, repeatedOrderTotalCents } = computeOrderGroupAmounts(activeRows);
+  const { primaryCents: returnedCents } = computeOrderGroupAmounts(returnedRows);
+  const originalWithReturnsCents =
+    returnedCents > 0 ? primaryCents + returnedCents : null;
+
+  if (
+    primaryCents <= 0 &&
+    (repeatedOrderTotalCents ?? 0) <= 0 &&
+    (originalWithReturnsCents ?? 0) <= 0
+  ) {
+    return null;
+  }
+
+  // Detect whether any Returned row has no matching active Delivered/Ordered row
+  const activeSignatureCounts = new Map<string, number>();
+  for (const r of activeRows) {
+    const sig = `${r.itemDescription.trim().toLowerCase()}::${
+      r.itemPrice !== null ? toCents(Math.abs(r.itemPrice)) : ''
+    }`;
+    activeSignatureCounts.set(sig, (activeSignatureCounts.get(sig) ?? 0) + 1);
+  }
+  const hasUniqueReturnedItems = returnedRows.some((r) => {
+    const sig = `${r.itemDescription.trim().toLowerCase()}::${
+      r.itemPrice !== null ? toCents(Math.abs(r.itemPrice)) : ''
+    }`;
+    return !activeSignatureCounts.has(sig);
+  });
+
+  const sortedDates = allNonCancelledRows
+    .map((r) => r.orderDate.trim())
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort((a, b) => a.localeCompare(b));
+  const orderDate = sortedDates[0] ?? allNonCancelledRows[0].orderDate.trim();
+
+  const existingExpSet = new Map<string, string>();
+  const existingBankSet = new Map<string, string>();
+  const categories = new Set<string>();
+  const descriptionTokens = new Set<string>();
+
+  for (const row of allNonCancelledRows) {
+    const eid = (row.expId ?? '').trim();
+    if (eid && !existingExpSet.has(eid.toLowerCase())) {
+      existingExpSet.set(eid.toLowerCase(), eid);
+    }
+    const bid = (row.bankId ?? '').trim();
+    if (bid && !existingBankSet.has(bid.toLowerCase())) {
+      existingBankSet.set(bid.toLowerCase(), bid);
+    }
+    const cat = (row.category ?? '').trim().toLowerCase();
+    if (cat) categories.add(cat);
+    for (const tok of extractMatchTokens(row.itemDescription)) {
+      descriptionTokens.add(tok);
+    }
+  }
+
+  return {
+    normOrder,
+    displayOrderNumber: allNonCancelledRows[0].orderNumber.trim() || normOrder,
+    orderDate,
+    activeRows,
+    allNonCancelledRows,
+    primaryCents,
+    originalWithReturnsCents,
+    repeatedOrderTotalCents,
+    hasUniqueReturnedItems,
+    existingExpIds: Array.from(existingExpSet.values()),
+    existingBankIds: Array.from(existingBankSet.values()),
+    categories,
+    descriptionTokens,
+  };
 }
 
 /**
@@ -219,51 +304,8 @@ export function matchAmazonOrdersWithExpenses(
 
   const orderGroups: OrderGroup[] = [];
   for (const [normOrder, allRows] of rowsByOrder.entries()) {
-    const activeRows = allRows.filter((r) => r.status !== 'Cancelled');
-    if (activeRows.length === 0) continue;
-
-    const { primaryCents, repeatedOrderTotalCents } = computeOrderGroupAmounts(activeRows);
-    if (primaryCents <= 0 && (repeatedOrderTotalCents ?? 0) <= 0) continue;
-
-    const sortedDates = activeRows
-      .map((r) => r.orderDate.trim())
-      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
-      .sort((a, b) => a.localeCompare(b));
-    const orderDate = sortedDates[0] ?? activeRows[0].orderDate.trim();
-
-    const existingExpSet = new Map<string, string>();
-    const existingBankSet = new Map<string, string>();
-    const categories = new Set<string>();
-    const descriptionTokens = new Set<string>();
-
-    for (const row of activeRows) {
-      const eid = (row.expId ?? '').trim();
-      if (eid && !existingExpSet.has(eid.toLowerCase())) {
-        existingExpSet.set(eid.toLowerCase(), eid);
-      }
-      const bid = (row.bankId ?? '').trim();
-      if (bid && !existingBankSet.has(bid.toLowerCase())) {
-        existingBankSet.set(bid.toLowerCase(), bid);
-      }
-      const cat = (row.category ?? '').trim().toLowerCase();
-      if (cat) categories.add(cat);
-      for (const tok of extractMatchTokens(row.itemDescription)) {
-        descriptionTokens.add(tok);
-      }
-    }
-
-    orderGroups.push({
-      normOrder,
-      displayOrderNumber: activeRows[0].orderNumber.trim() || normOrder,
-      orderDate,
-      activeRows,
-      primaryCents,
-      repeatedOrderTotalCents,
-      existingExpIds: Array.from(existingExpSet.values()),
-      existingBankIds: Array.from(existingBankSet.values()),
-      categories,
-      descriptionTokens,
-    });
+    const group = buildOrderGroupFromRows(normOrder, allRows);
+    if (group) orderGroups.push(group);
   }
 
   const claimedOrderNumbers = new Set<string>();
@@ -296,13 +338,20 @@ export function matchAmazonOrdersWithExpenses(
       const linkedAmazonExp = amazonExpById.get(existingExpNorm);
       if (linkedAmazonExp) {
         const expCents = toCents(Math.abs(linkedAmazonExp.amount));
+        const matchesWithReturns =
+          group.originalWithReturnsCents !== null &&
+          expCents === group.originalWithReturnsCents;
         const amountMatches =
           expCents === group.primaryCents ||
+          matchesWithReturns ||
           (group.repeatedOrderTotalCents !== null &&
             expCents === group.repeatedOrderTotalCents);
 
         if (amountMatches) {
-          const rowsNeedingBackfill = group.activeRows.filter(
+          const targetRows = matchesWithReturns
+            ? group.allNonCancelledRows
+            : group.activeRows;
+          const rowsNeedingBackfill = targetRows.filter(
             (r) => (r.expId ?? '').trim() !== existingExpId
           );
           if (rowsNeedingBackfill.length > 0) {
@@ -347,6 +396,7 @@ export function matchAmazonOrdersWithExpenses(
     group: OrderGroup;
     expense: ExpenseRecord;
     matchedCents: number;
+    includesReturnedRows: boolean;
     score: number;
     dateDiffDays: number;
   }
@@ -356,16 +406,39 @@ export function matchAmazonOrdersWithExpenses(
   for (const group of orderGroups) {
     if (claimedOrderNumbers.has(group.normOrder)) continue;
 
-    const amountTargets: Array<{ cents: number; baseScore: number }> = [];
+    const amountTargets: Array<{
+      cents: number;
+      baseScore: number;
+      includesReturnedRows: boolean;
+    }> = [];
+    if (
+      group.originalWithReturnsCents !== null &&
+      group.originalWithReturnsCents > 0 &&
+      group.originalWithReturnsCents !== group.primaryCents
+    ) {
+      amountTargets.push({
+        cents: group.originalWithReturnsCents,
+        baseScore: group.hasUniqueReturnedItems ? 1050 : 950,
+        includesReturnedRows: true,
+      });
+    }
     if (group.primaryCents > 0) {
-      amountTargets.push({ cents: group.primaryCents, baseScore: 1000 });
+      amountTargets.push({
+        cents: group.primaryCents,
+        baseScore: 1000,
+        includesReturnedRows: false,
+      });
     }
     if (
       group.repeatedOrderTotalCents !== null &&
       group.repeatedOrderTotalCents > 0 &&
       group.repeatedOrderTotalCents !== group.primaryCents
     ) {
-      amountTargets.push({ cents: group.repeatedOrderTotalCents, baseScore: 500 });
+      amountTargets.push({
+        cents: group.repeatedOrderTotalCents,
+        baseScore: 500,
+        includesReturnedRows: false,
+      });
     }
 
     const orderDays = parseIsoDateToUtcDays(group.orderDate);
@@ -411,6 +484,7 @@ export function matchAmazonOrdersWithExpenses(
           group,
           expense: exp,
           matchedCents: target.cents,
+          includesReturnedRows: target.includesReturnedRows,
           score,
           dateDiffDays,
         });
@@ -443,7 +517,10 @@ export function matchAmazonOrdersWithExpenses(
     claimedOrderNumbers.add(pair.group.normOrder);
     claimedExpenseIds.add(expIdNorm);
 
-    const rowsToUpdate = pair.group.activeRows.filter(
+    const targetRows = pair.includesReturnedRows
+      ? pair.group.allNonCancelledRows
+      : pair.group.activeRows;
+    const rowsToUpdate = targetRows.filter(
       (r) => (r.expId ?? '').trim() !== expIdTrimmed
     );
     if (rowsToUpdate.length === 0) continue;
@@ -550,51 +627,8 @@ export function matchAmazonOrdersWithBank(
 
   const orderGroups: OrderGroup[] = [];
   for (const [normOrder, allRows] of rowsByOrder.entries()) {
-    const activeRows = allRows.filter((r) => r.status !== 'Cancelled');
-    if (activeRows.length === 0) continue;
-
-    const { primaryCents, repeatedOrderTotalCents } = computeOrderGroupAmounts(activeRows);
-    if (primaryCents <= 0 && (repeatedOrderTotalCents ?? 0) <= 0) continue;
-
-    const sortedDates = activeRows
-      .map((r) => r.orderDate.trim())
-      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
-      .sort((a, b) => a.localeCompare(b));
-    const orderDate = sortedDates[0] ?? activeRows[0].orderDate.trim();
-
-    const existingExpSet = new Map<string, string>();
-    const existingBankSet = new Map<string, string>();
-    const categories = new Set<string>();
-    const descriptionTokens = new Set<string>();
-
-    for (const row of activeRows) {
-      const eid = (row.expId ?? '').trim();
-      if (eid && !existingExpSet.has(eid.toLowerCase())) {
-        existingExpSet.set(eid.toLowerCase(), eid);
-      }
-      const bid = (row.bankId ?? '').trim();
-      if (bid && !existingBankSet.has(bid.toLowerCase())) {
-        existingBankSet.set(bid.toLowerCase(), bid);
-      }
-      const cat = (row.category ?? '').trim().toLowerCase();
-      if (cat) categories.add(cat);
-      for (const tok of extractMatchTokens(row.itemDescription)) {
-        descriptionTokens.add(tok);
-      }
-    }
-
-    orderGroups.push({
-      normOrder,
-      displayOrderNumber: activeRows[0].orderNumber.trim() || normOrder,
-      orderDate,
-      activeRows,
-      primaryCents,
-      repeatedOrderTotalCents,
-      existingExpIds: Array.from(existingExpSet.values()),
-      existingBankIds: Array.from(existingBankSet.values()),
-      categories,
-      descriptionTokens,
-    });
+    const group = buildOrderGroupFromRows(normOrder, allRows);
+    if (group) orderGroups.push(group);
   }
 
   const claimedOrderNumbers = new Set<string>();
@@ -618,17 +652,23 @@ export function matchAmazonOrdersWithBank(
       if (group.existingBankIds.length === 1) {
         const existingBankId = group.existingBankIds[0];
         const linkedAmazonBank = amazonBankById.get(existingBankId.toLowerCase());
-        const rowsNeedingReconSync = group.activeRows.filter(
-          (r) => r.isRecon !== 'Yes'
-        );
-
-        if (linkedAmazonBank && rowsNeedingReconSync.length > 0) {
+        if (linkedAmazonBank) {
           const bankCents = getBankAbsCents(linkedAmazonBank);
+          const matchesWithReturns =
+            group.originalWithReturnsCents !== null &&
+            bankCents === group.originalWithReturnsCents;
           const amountMatches =
             bankCents === group.primaryCents ||
+            matchesWithReturns ||
             (group.repeatedOrderTotalCents !== null &&
               bankCents === group.repeatedOrderTotalCents);
-          if (amountMatches) {
+          const targetRows = matchesWithReturns
+            ? group.allNonCancelledRows
+            : group.activeRows;
+          const rowsNeedingReconSync = targetRows.filter(
+            (r) => (r.bankId ?? '').trim() !== existingBankId || r.isRecon !== 'Yes'
+          );
+          if (amountMatches && rowsNeedingReconSync.length > 0) {
             for (const row of rowsNeedingReconSync) {
               rowUpdates.push({
                 sheetRowNumber: row.sheetRowNumber as number,
@@ -667,13 +707,20 @@ export function matchAmazonOrdersWithBank(
       const linkedAmazonBank = amazonBankById.get(existingBankNorm);
       if (linkedAmazonBank) {
         const bankCents = getBankAbsCents(linkedAmazonBank);
+        const matchesWithReturns =
+          group.originalWithReturnsCents !== null &&
+          bankCents === group.originalWithReturnsCents;
         const amountMatches =
           bankCents === group.primaryCents ||
+          matchesWithReturns ||
           (group.repeatedOrderTotalCents !== null &&
             bankCents === group.repeatedOrderTotalCents);
 
         if (amountMatches) {
-          const rowsNeedingBackfill = group.activeRows.filter(
+          const targetRows = matchesWithReturns
+            ? group.allNonCancelledRows
+            : group.activeRows;
+          const rowsNeedingBackfill = targetRows.filter(
             (r) => (r.bankId ?? '').trim() !== existingBankId || r.isRecon !== 'Yes'
           );
           if (rowsNeedingBackfill.length > 0) {
@@ -719,6 +766,7 @@ export function matchAmazonOrdersWithBank(
     group: OrderGroup;
     bankTx: BankStatementLookupInput;
     matchedCents: number;
+    includesReturnedRows: boolean;
     score: number;
     dateDiffDays: number;
   }
@@ -728,16 +776,39 @@ export function matchAmazonOrdersWithBank(
   for (const group of orderGroups) {
     if (claimedOrderNumbers.has(group.normOrder)) continue;
 
-    const amountTargets: Array<{ cents: number; baseScore: number }> = [];
+    const amountTargets: Array<{
+      cents: number;
+      baseScore: number;
+      includesReturnedRows: boolean;
+    }> = [];
+    if (
+      group.originalWithReturnsCents !== null &&
+      group.originalWithReturnsCents > 0 &&
+      group.originalWithReturnsCents !== group.primaryCents
+    ) {
+      amountTargets.push({
+        cents: group.originalWithReturnsCents,
+        baseScore: group.hasUniqueReturnedItems ? 1050 : 950,
+        includesReturnedRows: true,
+      });
+    }
     if (group.primaryCents > 0) {
-      amountTargets.push({ cents: group.primaryCents, baseScore: 1000 });
+      amountTargets.push({
+        cents: group.primaryCents,
+        baseScore: 1000,
+        includesReturnedRows: false,
+      });
     }
     if (
       group.repeatedOrderTotalCents !== null &&
       group.repeatedOrderTotalCents > 0 &&
       group.repeatedOrderTotalCents !== group.primaryCents
     ) {
-      amountTargets.push({ cents: group.repeatedOrderTotalCents, baseScore: 500 });
+      amountTargets.push({
+        cents: group.repeatedOrderTotalCents,
+        baseScore: 500,
+        includesReturnedRows: false,
+      });
     }
 
     const orderDays = parseIsoDateToUtcDays(group.orderDate);
@@ -783,6 +854,7 @@ export function matchAmazonOrdersWithBank(
           group,
           bankTx: tx,
           matchedCents: target.cents,
+          includesReturnedRows: target.includesReturnedRows,
           score,
           dateDiffDays,
         });
@@ -815,7 +887,10 @@ export function matchAmazonOrdersWithBank(
     claimedOrderNumbers.add(pair.group.normOrder);
     claimedBankIds.add(bankIdNorm);
 
-    const rowsToUpdate = pair.group.activeRows.filter(
+    const targetRows = pair.includesReturnedRows
+      ? pair.group.allNonCancelledRows
+      : pair.group.activeRows;
+    const rowsToUpdate = targetRows.filter(
       (r) => (r.bankId ?? '').trim() !== bankIdTrimmed || r.isRecon !== 'Yes'
     );
     if (rowsToUpdate.length === 0) continue;

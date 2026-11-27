@@ -92,17 +92,19 @@ function normalizeDateOutput(rawDate: string): string {
 function parseOptionalNumber(raw: unknown, decimals = 2): number | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw) || raw < 0) return null;
+    if (!Number.isFinite(raw)) return null;
     const factor = 10 ** decimals;
-    return Math.round(raw * factor) / factor;
+    return Math.round(Math.abs(raw) * factor) / factor;
   }
   const str = String(raw).trim();
   if (!str) return null;
-  const cleaned = str.replace(/[$,\s]/g, '');
+  const isParenNegative = /^\(.*\)$/.test(str);
+  const cleaned = str.replace(/[()$,\s]/g, '');
   const n = Number.parseFloat(cleaned);
-  if (!Number.isFinite(n) || n < 0) return null;
+  if (!Number.isFinite(n)) return null;
+  const magnitude = Math.abs(isParenNegative ? -n : n);
   const factor = 10 ** decimals;
-  return Math.round(n * factor) / factor;
+  return Math.round(magnitude * factor) / factor;
 }
 
 function normalizeStatusOutput(raw: unknown): AmazonOrderStatus {
@@ -178,22 +180,22 @@ export async function scanAmazonDocument(
           {
             text: `Inspect every page and every Amazon order or invoice visible in this document (${req.fileName}).
 Note: Printable Amazon invoice PDFs may be rotated 90 degrees sideways—read all rotated text carefully.
-A single document may contain 1 order or multiple line items within an order. Return ONE item object per line item visible.
+A single document may contain 1 order or multiple line items within an order. Return ONE item object per line item visible—even if multiple line items share the same quantity, description, and price (for example, identical items shipped individually), and even if an item appears both as ordered/delivered and as returned/refunded.
 
 For EACH line item, extract these 9 fields accurately. IMPORTANT: If a field is NOT visibly present in the document, leave strings as "" and numeric fields as null—NEVER guess or fabricate missing values:
 1. orderNumber: Amazon Order # / Order ID (e.g., "111-0177387-1485024"), "" if absent.
 2. orderDate: Order placed date formatted as YYYY-MM-DD (e.g., "October 4, 2026" -> "2026-10-04"), "" if absent.
 3. quantity: Numeric quantity for this line item (e.g., 1, 2). On order summary screenshots with a single item thumbnail or item row and no explicit multiplier badge, use 1 if it represents 1 item; if truly unclear, return null.
 4. itemDescription: Exact product/item title or description. If multiple items in the same order share an identical truncated title (e.g. "Custom Neon Signs, Personalised Led Neo...") while their thumbnails show distinct custom text (such as "PUJA SHOPPING MARKET", "REGISTRATION", "Kids Corner", "NextGen Den"), append the distinct thumbnail label in parentheses so each item is clearly identified.
-5. itemPrice: Unit/item price as a numeric dollar value (e.g., 29.99) if explicitly shown on the line item (or equal to line price when explicitly printed). If NOT shown on an order summary screenshot (only order TOTAL is shown), leave as null.
-6. total: Dollar total for the line item if itemized (e.g. invoice "Total" column), or the order "TOTAL" if single-item. If an order summary screenshot shows multiple items and ONLY one order-level TOTAL (no per-item prices/totals), put the order-level TOTAL on the FIRST item of that order and null on the remaining items so the order total is not duplicated across rows.
+5. itemPrice: Unit/item price as a positive numeric dollar value (e.g., 29.99) if explicitly shown on the line item (or equal to line price when explicitly printed). If NOT shown on an order summary screenshot (only order TOTAL is shown), leave as null. For Returned/refunded items, ALWAYS output a positive number (e.g., 29.99 instead of -29.99).
+6. total: Positive dollar total for THIS line item (quantity × itemPrice, e.g. Qty 2 at $3.77 -> 7.54, Qty 3 at $9.99 -> 29.97, or the printed line "Total"). Do NOT put the order-level "Grand Total" on an item row if per-item prices are shown. ONLY when an order summary screenshot shows multiple items with NO per-item prices at all (only one order-level TOTAL), put the order-level TOTAL on the FIRST item of that order and null on the remaining items. For Returned/refunded items, ALWAYS output a positive number (e.g., 29.99 instead of -29.99).
 7. shippedTo: Recipient name from "SHIP TO" or shipping address block (e.g., "Sandip Dasgupta"), "" if not present in the document.
 8. paymentMethod: Payment method if visible (e.g., "credit/debit", "Visa ending in 1234", "Amazon Gift Card"). Strip leading "Paid via " if helpful (e.g., "Paid via credit/debit" -> "credit/debit"), "" if not visible. If the payment method is a Wells Fargo Business Debit card, shorten it to "Debit ... XXXX" where XXXX are the last 4 digits (or "Debit" if digits are not shown).
 9. status: Must be one of "Ordered", "Delivered", "Cancelled", "Returned", or "" if status is not indicated.
    - "Arriving ...", "Shipped", "Order placed", "Out for delivery" -> "Ordered"
    - "Delivered ..." -> "Delivered"
    - "Cancelled" / "Canceled" -> "Cancelled"
-   - "Returned" / "Return complete" -> "Returned"
+   - "Returned" / "Return complete" / "Return started" / "Refunded" / "Refund issued" -> "Returned"
    - Invoice/packing slips that only state "Your order of..." or "This shipment completes your order" without a delivery/return/cancellation status -> leave as "" unless status is explicitly shown.`,
           },
         ],
@@ -284,16 +286,22 @@ For EACH line item, extract these 9 fields accurately. IMPORTANT: If a field is 
   }
 
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
-  const items: RawExtractedAmazonItem[] = rawItems
+  const mappedItems: RawExtractedAmazonItem[] = rawItems
     .map((item) => {
       const qty = parseOptionalNumber(item.quantity, 0);
+      const safeQty = qty !== null && qty > 0 ? qty : null;
+      const itemPrice = parseOptionalNumber(item.itemPrice, 2);
+      let total = parseOptionalNumber(item.total, 2);
+      if (total === null && itemPrice !== null) {
+        total = Math.round(itemPrice * (safeQty ?? 1) * 100) / 100;
+      }
       return {
         orderNumber: String(item.orderNumber ?? '').trim(),
         orderDate: normalizeDateOutput(String(item.orderDate ?? '')),
-        quantity: qty !== null && qty > 0 ? qty : null,
+        quantity: safeQty,
         itemDescription: String(item.itemDescription ?? '').trim(),
-        itemPrice: parseOptionalNumber(item.itemPrice, 2),
-        total: parseOptionalNumber(item.total, 2),
+        itemPrice,
+        total,
         shippedTo: String(item.shippedTo ?? '').trim(),
         paymentMethod: normalizeAmazonPaymentMethod(String(item.paymentMethod ?? '')),
         status: normalizeStatusOutput(item.status),
@@ -306,6 +314,37 @@ For EACH line item, extract these 9 fields accurately. IMPORTANT: If a field is 
         it.total !== null ||
         it.itemPrice !== null
     );
+
+  // Guard against multi-item orders where Grand Total was placed on row 0 while all items also have unit prices
+  const orderGroups = new Map<string, RawExtractedAmazonItem[]>();
+  for (const it of mappedItems) {
+    const key = it.orderNumber.trim().toUpperCase();
+    if (!key) continue;
+    const list = orderGroups.get(key) ?? [];
+    list.push(it);
+    orderGroups.set(key, list);
+  }
+  for (const group of orderGroups.values()) {
+    if (group.length <= 1) continue;
+    if (!group.every((it) => it.itemPrice !== null)) continue;
+    const lineCentsList = group.map((it) =>
+      Math.round((it.itemPrice as number) * (it.quantity ?? 1) * 100)
+    );
+    const totalSumCents = lineCentsList.reduce((acc, c) => acc + c, 0);
+    const firstTotalCents =
+      group[0].total !== null ? Math.round(group[0].total * 100) : null;
+    if (
+      firstTotalCents !== null &&
+      firstTotalCents !== lineCentsList[0] &&
+      Math.abs(firstTotalCents - totalSumCents) <= 5
+    ) {
+      group.forEach((it, idx) => {
+        it.total = lineCentsList[idx] / 100;
+      });
+    }
+  }
+
+  const items = mappedItems;
 
   return {
     fileName: req.fileName,

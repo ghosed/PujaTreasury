@@ -146,6 +146,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
   const [sheetRecords, setSheetRecords] = useState<AmazonOrderRecord[]>([]);
   const [existingIds, setExistingIds] = useState<Set<string>>(new Set());
   const [existingDuplicateKeys, setExistingDuplicateKeys] = useState<Set<string>>(new Set());
+  const [existingFileNames, setExistingFileNames] = useState<Set<string>>(new Set());
   const [hasLoadedSheet, setHasLoadedSheet] = useState(false);
   const [isLoadingSheet, setIsLoadingSheet] = useState(false);
 
@@ -271,7 +272,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           (!activeMeta.hasIsReconHeader ||
             !activeMeta.hasCategoryHeader ||
             !activeMeta.hasExpIdHeader ||
-            !activeMeta.hasBankIdHeader)
+            !activeMeta.hasBankIdHeader ||
+            !activeMeta.hasSourceFileHeader)
         ) {
           try {
             activeMeta = await ensureAmazonExtraHeaders(token, activeMeta);
@@ -284,6 +286,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         setSheetRecords(loaded.records);
         setExistingIds(loaded.existingIds);
         setExistingDuplicateKeys(loaded.existingDuplicateKeys);
+        setExistingFileNames(loaded.existingFileNames);
         if (expenseRes) {
           setExpenseRecords(expenseRes.records);
         }
@@ -527,16 +530,23 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     setStatusMessage(null);
   };
 
-  // Run deduplication over uploaded scans + sheet IDs/keys
+  // Run deduplication over uploaded scans + sheet file names / IDs
   const scanPipeline = useMemo(
     () =>
       processScannedAmazonFiles(
         uploadedFiles,
         existingIds,
         existingDuplicateKeys,
-        stagedOverrides
+        stagedOverrides,
+        existingFileNames
       ),
-    [uploadedFiles, existingIds, existingDuplicateKeys, stagedOverrides]
+    [
+      uploadedFiles,
+      existingIds,
+      existingDuplicateKeys,
+      stagedOverrides,
+      existingFileNames,
+    ]
   );
 
   const scanningCount = useMemo(
@@ -774,6 +784,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           quantity: rec.quantity,
           itemDescription: rec.itemDescription,
           itemPrice: rec.itemPrice,
+          status: rec.status,
         });
         if (hashedId !== rec.uniqueId) {
           updates.push({ sheetRowNumber: rec.sheetRowNumber, uniqueId: hashedId });
@@ -792,9 +803,10 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     }
   };
 
-  // Metrics excluding skipped duplicate copies
+  // Metrics excluding skipped duplicate copies (Returned items count as positive income)
   const kpiMetrics = useMemo(() => {
-    let totalSpendCents = 0;
+    let expenseSpendCents = 0;
+    let returnIncomeCents = 0;
     let activeCount = 0;
     let unreconCount = 0;
     let deliveredCount = 0;
@@ -815,7 +827,12 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
           : rec.itemPrice !== null
             ? rec.itemPrice * (rec.quantity ?? 1)
             : 0;
-      totalSpendCents += toCents(lineValue);
+      const absLineValue = Math.abs(lineValue);
+      if (rec.status === 'Returned') {
+        returnIncomeCents += toCents(absLineValue);
+      } else {
+        expenseSpendCents += toCents(absLineValue);
+      }
 
       if (rec.isRecon === 'No') unreconCount++;
       if (rec.status === 'Delivered') deliveredCount++;
@@ -829,7 +846,10 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
     return {
       activeCount,
       distinctOrderCount: distinctOrders.size,
-      totalSpend: totalSpendCents / 100,
+      totalSpend: expenseSpendCents / 100,
+      expenseSpend: expenseSpendCents / 100,
+      returnIncome: returnIncomeCents / 100,
+      originalWithReturns: (expenseSpendCents + returnIncomeCents) / 100,
       unreconCount,
       deliveredCount,
       orderedCount,
@@ -859,6 +879,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
       setSheetRecords(workspace.records);
       setExistingIds(workspace.existingIds);
       setExistingDuplicateKeys(workspace.existingDuplicateKeys);
+      setExistingFileNames(workspace.existingFileNames);
       setHasLoadedSheet(true);
       setClearQueueAfterSync(true);
       setPendingSyncPlan(plan);
@@ -1005,6 +1026,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
       setSheetRecords(workspace.records);
       setExistingIds(workspace.existingIds);
       setExistingDuplicateKeys(workspace.existingDuplicateKeys);
+      setExistingFileNames(workspace.existingFileNames);
       setHasLoadedSheet(true);
       setEntryModalState({ isOpen: false, mode: 'create', record: null });
       setClearQueueAfterSync(false);
@@ -1285,7 +1307,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         (!activeMeta.hasIsReconHeader ||
           !activeMeta.hasCategoryHeader ||
           !activeMeta.hasExpIdHeader ||
-          !activeMeta.hasBankIdHeader)
+          !activeMeta.hasBankIdHeader ||
+          !activeMeta.hasSourceFileHeader)
       ) {
         activeMeta = await ensureAmazonExtraHeaders(token, activeMeta);
       }
@@ -1300,6 +1323,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         setSheetRecords(amazonWorkspace.records);
         setExistingIds(amazonWorkspace.existingIds);
         setExistingDuplicateKeys(amazonWorkspace.existingDuplicateKeys);
+        setExistingFileNames(amazonWorkspace.existingFileNames);
         setExpenseRecords(expenseWorkspace.records);
         setHasLoadedSheet(true);
 
@@ -1387,7 +1411,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         (!activeMeta.hasIsReconHeader ||
           !activeMeta.hasCategoryHeader ||
           !activeMeta.hasExpIdHeader ||
-          !activeMeta.hasBankIdHeader)
+          !activeMeta.hasBankIdHeader ||
+          !activeMeta.hasSourceFileHeader)
       ) {
         activeMeta = await ensureAmazonExtraHeaders(token, activeMeta);
       }
@@ -1399,6 +1424,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         setSheetRecords(amazonWorkspace.records);
         setExistingIds(amazonWorkspace.existingIds);
         setExistingDuplicateKeys(amazonWorkspace.existingDuplicateKeys);
+        setExistingFileNames(amazonWorkspace.existingFileNames);
         setBankRecords(combinedBank);
         setHasLoadedSheet(true);
 
@@ -1627,6 +1653,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
         rec.category ?? '',
         rec.expId ?? '',
         rec.bankId ?? '',
+        rec.sourceFileName ?? '',
         rec.sourceOrigin === 'sheet' ? 'Amazon_Ledger' : rec.sourceFileName || 'Scanned',
       ]
         .map(csvCell)
@@ -1704,8 +1731,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
               02. Upload Order Images / PDFs
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              Amazon order summary images or invoice PDFs (PNG, JPG, WEBP, PDF). Exact duplicate
-              items are skipped.
+              Amazon order summary images or invoice PDFs (PNG, JPG, WEBP, PDF). Duplicate files
+              with the exact same file name are skipped.
             </p>
 
             <input
@@ -1906,7 +1933,7 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
               <h1 className="text-xl font-bold tracking-tight text-slate-900">Amazon Ledger</h1>
               <p className="mt-1 max-w-2xl text-xs text-slate-500">
                 Upload Amazon order summaries or invoice PDFs, auto-categorize against LookUp
-                expense categories, deduplicate identical items, and sync to{' '}
+                expense categories, skip duplicate uploaded file names, and sync to{' '}
                 <span className="font-medium text-slate-700">Amazon_Ledger</span> (tab{' '}
                 <span className="font-mono text-slate-700">AmzOrders</span>).
               </p>
@@ -2168,8 +2195,8 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                 <span>
                   <strong>{scanPipeline.duplicateOrders.length}</strong> duplicate order{' '}
                   {scanPipeline.duplicateOrders.length === 1 ? 'item was' : 'items were'}{' '}
-                  detected (same Order #, Date, Qty, Description &amp; Item Price) and will{' '}
-                  <strong>not</strong> be recorded to Amazon_Ledger.
+                  skipped because a file with the exact same name was already uploaded or
+                  recorded in Amazon_Ledger.
                 </span>
               </div>
               <button
@@ -2204,15 +2231,33 @@ export const AmazonModule: React.FC<AmazonModuleProps> = ({
                 <span>Total Amazon Spend</span>
                 <Package className="h-3.5 w-3.5 text-red-700" aria-hidden="true" />
               </div>
-              <div className="mt-1 flex items-baseline justify-between">
+              <div className="mt-1 flex items-baseline justify-between gap-2">
                 <span className="font-mono text-2xl font-bold text-red-700 tabular-nums">
                   {kpiMetrics.totalSpend.toLocaleString('en-US', {
                     style: 'currency',
                     currency: 'USD',
                   })}
                 </span>
-                <span className="text-[11px] text-slate-500">
-                  {scanPipeline.readyOrders.length} staged
+                <span className="text-[11px] text-slate-500 text-right tabular-nums">
+                  {kpiMetrics.returnIncome > 0 ? (
+                    <>
+                      Orig{' '}
+                      {kpiMetrics.originalWithReturns.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                      })}{' '}
+                      · Return{' '}
+                      <span className="font-medium text-emerald-700">
+                        +
+                        {kpiMetrics.returnIncome.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: 'USD',
+                        })}
+                      </span>
+                    </>
+                  ) : (
+                    `${scanPipeline.readyOrders.length} staged`
+                  )}
                 </span>
               </div>
             </div>

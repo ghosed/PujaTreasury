@@ -33,6 +33,7 @@ export const CANONICAL_AMAZON_HEADERS = [
   'Category',
   'Exp_ID',
   'Bank_ID',
+  'Source File',
 ] as const;
 
 interface SpreadsheetMetadata {
@@ -110,7 +111,8 @@ type AmazonFieldKey =
   | 'isRecon'
   | 'category'
   | 'expId'
-  | 'bankId';
+  | 'bankId'
+  | 'sourceFileName';
 
 const HEADER_TO_AMAZON_FIELD: Record<string, AmazonFieldKey> = {
   uniqueid: 'uniqueId',
@@ -160,6 +162,9 @@ const HEADER_TO_AMAZON_FIELD: Record<string, AmazonFieldKey> = {
   bankledgerid: 'bankId',
   linkedbankid: 'bankId',
   matchingbankid: 'bankId',
+  sourcefile: 'sourceFileName',
+  sourcefilename: 'sourceFileName',
+  filename: 'sourceFileName',
 };
 
 function buildAmazonFieldMap(headers: string[]): Map<AmazonFieldKey, number> {
@@ -183,6 +188,7 @@ function serializeAmazonRow(
     | 'categoryColIndex'
     | 'expIdColIndex'
     | 'bankIdColIndex'
+    | 'sourceFileColIndex'
   >
 ): Array<string | number> {
   const fieldToIdx = buildAmazonFieldMap(meta.columnHeaders);
@@ -192,7 +198,8 @@ function serializeAmazonRow(
     meta.isReconColIndex + 1,
     meta.categoryColIndex + 1,
     meta.expIdColIndex + 1,
-    meta.bankIdColIndex + 1
+    meta.bankIdColIndex + 1,
+    meta.sourceFileColIndex + 1
   );
   const row: Array<string | number> = record.rawRowValues
     ? [...record.rawRowValues]
@@ -239,6 +246,7 @@ function serializeAmazonRow(
   setField('category', record.category || '', meta.categoryColIndex);
   setField('expId', (record.expId ?? '').trim(), meta.expIdColIndex);
   setField('bankId', (record.bankId ?? '').trim(), meta.bankIdColIndex);
+  setField('sourceFileName', (record.sourceFileName ?? '').trim(), meta.sourceFileColIndex);
 
   return row;
 }
@@ -248,6 +256,7 @@ export interface LoadedAmazonWorkspace {
   records: AmazonOrderRecord[];
   existingIds: Set<string>;
   existingDuplicateKeys: Set<string>;
+  existingFileNames: Set<string>;
 }
 
 export async function fetchAmazonLedger(
@@ -327,10 +336,15 @@ export async function fetchAmazonLedger(
   const bankIdColIndex =
     fieldIdx.get('bankId') ?? (needsHeader ? 13 : nextExtraIdx++);
 
+  const hasSourceFileHeader = needsHeader ? true : fieldIdx.has('sourceFileName');
+  const sourceFileColIndex =
+    fieldIdx.get('sourceFileName') ?? (needsHeader ? 14 : nextExtraIdx++);
+
   const startRowIdx = needsHeader ? 0 : 1;
   const records: AmazonOrderRecord[] = [];
   const existingIds = new Set<string>();
   const existingDuplicateKeys = new Set<string>();
+  const existingFileNames = new Set<string>();
 
   for (let i = startRowIdx; i < rows.length; i++) {
     const row = rows[i] ?? [];
@@ -383,6 +397,9 @@ export async function fetchAmazonLedger(
     const bankId = hasBankIdHeader
       ? String(row[bankIdColIndex] ?? '').trim()
       : '';
+    const sourceFileName = hasSourceFileHeader
+      ? String(row[sourceFileColIndex] ?? '').trim()
+      : '';
 
     const keyArgs = {
       orderNumber,
@@ -390,6 +407,7 @@ export async function fetchAmazonLedger(
       quantity,
       itemDescription,
       itemPrice,
+      status,
     };
     const deterministicId = buildAmazonUniqueId(keyArgs);
     const uniqueId = rawUniqueId || deterministicId;
@@ -398,6 +416,9 @@ export async function fetchAmazonLedger(
     existingIds.add(uniqueId);
     existingIds.add(deterministicId);
     existingDuplicateKeys.add(duplicateKey);
+    if (sourceFileName && sourceFileName !== 'Manual Amazon Order Entry') {
+      existingFileNames.add(sourceFileName);
+    }
 
     records.push({
       rowKey: `sheet-amazon-${i + 1}-${uniqueId}`,
@@ -417,6 +438,7 @@ export async function fetchAmazonLedger(
       expId,
       bankId,
       sourceOrigin: 'sheet',
+      sourceFileName: sourceFileName || undefined,
       sheetRowNumber: i + 1,
       rawRowValues: row,
     });
@@ -433,15 +455,18 @@ export async function fetchAmazonLedger(
       hasCategoryHeader,
       hasExpIdHeader,
       hasBankIdHeader,
+      hasSourceFileHeader,
       isReconColIndex,
       categoryColIndex,
       expIdColIndex,
       bankIdColIndex,
+      sourceFileColIndex,
       columnHeaders,
     },
     records,
     existingIds,
     existingDuplicateKeys,
+    existingFileNames,
   };
 }
 
@@ -477,6 +502,12 @@ export async function ensureAmazonExtraHeaders(
       values: [['Bank_ID']],
     });
   }
+  if (!meta.hasSourceFileHeader) {
+    data.push({
+      range: `${safeTab}!${colIndexToA1(meta.sourceFileColIndex)}1`,
+      values: [['Source File']],
+    });
+  }
 
   if (data.length === 0) return meta;
 
@@ -501,7 +532,8 @@ export async function ensureAmazonExtraHeaders(
       meta.isReconColIndex,
       meta.categoryColIndex,
       meta.expIdColIndex,
-      meta.bankIdColIndex
+      meta.bankIdColIndex,
+      meta.sourceFileColIndex
     )
   ) {
     nextHeaders.push('');
@@ -510,6 +542,7 @@ export async function ensureAmazonExtraHeaders(
   if (!meta.hasCategoryHeader) nextHeaders[meta.categoryColIndex] = 'Category';
   if (!meta.hasExpIdHeader) nextHeaders[meta.expIdColIndex] = 'Exp_ID';
   if (!meta.hasBankIdHeader) nextHeaders[meta.bankIdColIndex] = 'Bank_ID';
+  if (!meta.hasSourceFileHeader) nextHeaders[meta.sourceFileColIndex] = 'Source File';
 
   return {
     ...meta,
@@ -517,6 +550,7 @@ export async function ensureAmazonExtraHeaders(
     hasCategoryHeader: true,
     hasExpIdHeader: true,
     hasBankIdHeader: true,
+    hasSourceFileHeader: true,
     columnHeaders: nextHeaders,
   };
 }
@@ -528,30 +562,45 @@ export async function prepareAmazonSyncPlan(
 ): Promise<{ plan: AmazonSyncPlan; workspace: LoadedAmazonWorkspace }> {
   const workspace = await fetchAmazonLedger(accessToken, spreadsheetId);
   const seenIds = new Set<string>(workspace.existingIds);
-  const seenDupKeys = new Set<string>(workspace.existingDuplicateKeys);
 
   const toAppend: AmazonOrderRecord[] = [];
   let skippedDuplicatesCount = 0;
 
   for (const order of candidateOrders) {
-    const dupKey =
-      order.duplicateKey ||
-      buildAmazonDuplicateKey({
+    const trimmedFileName = (order.sourceFileName ?? '').trim();
+    const isManual = trimmedFileName === 'Manual Amazon Order Entry';
+    if (
+      order.isDuplicate ||
+      (trimmedFileName && !isManual && workspace.existingFileNames.has(trimmedFileName))
+    ) {
+      skippedDuplicatesCount++;
+      continue;
+    }
+
+    let nextUniqueId = order.uniqueId;
+    let occurrenceIndex = 0;
+    while (!nextUniqueId || seenIds.has(nextUniqueId)) {
+      occurrenceIndex++;
+      nextUniqueId = buildAmazonUniqueId({
         orderNumber: order.orderNumber,
         orderDate: order.orderDate,
         quantity: order.quantity,
         itemDescription: order.itemDescription,
         itemPrice: order.itemPrice,
+        status: order.status,
+        occurrenceIndex,
       });
-
-    if (seenIds.has(order.uniqueId) || seenDupKeys.has(dupKey)) {
-      skippedDuplicatesCount++;
-      continue;
     }
 
-    seenIds.add(order.uniqueId);
-    seenDupKeys.add(dupKey);
-    toAppend.push(order);
+    seenIds.add(nextUniqueId);
+    toAppend.push(
+      nextUniqueId === order.uniqueId
+        ? order
+        : {
+            ...order,
+            uniqueId: nextUniqueId,
+          }
+    );
   }
 
   return {
@@ -656,7 +705,8 @@ export async function updateAmazonRecord(
       meta.isReconColIndex + 1,
       meta.categoryColIndex + 1,
       meta.expIdColIndex + 1,
-      meta.bankIdColIndex + 1
+      meta.bankIdColIndex + 1,
+      meta.sourceFileColIndex + 1
     ) - 1
   );
   const safeTab = `'${meta.ledgerTabName.replace(/'/g, "''")}'`;

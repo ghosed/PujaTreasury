@@ -6,6 +6,7 @@ import {
   isValid12DigitAmazonUniqueId,
   normalizeAmazonPaymentMethod,
   normalizeAmazonStatus,
+  parseOptionalAmazonNumber,
   processScannedAmazonFiles,
 } from '../src/utils/amazonProcessor.ts';
 import {
@@ -41,7 +42,7 @@ test('buildAmazonUniqueId generates deterministic 12-digit numeric hash IDs', ()
   assert.equal(id1, id2);
 });
 
-test('processScannedAmazonFiles enforces strict 5-field deduplication without blocking distinct multi-item orders', () => {
+test('processScannedAmazonFiles allows individually shipped identical items and different files while skipping exact same file names', () => {
   const args = {
     orderNumber: '111-0177387-1485024',
     orderDate: '2026-10-04',
@@ -53,14 +54,14 @@ test('processScannedAmazonFiles enforces strict 5-field deduplication without bl
   const existingDupKey = buildAmazonDuplicateKey(args);
 
   const files: UploadedAmazonFile[] = [
+    // Exact same file name as one already recorded in sheet -> all items skipped as duplicate
     {
-      id: 'f1',
-      fileName: 'summary.jpeg',
-      mimeType: 'image/jpeg',
-      fileSize: 1024,
+      id: 'f-existing',
+      fileName: 'already-recorded.pdf',
+      mimeType: 'application/pdf',
+      fileSize: 2048,
       status: 'ready',
       extractedItems: [
-        // Exact 5-field match against existing sheet record -> Duplicate skipped
         {
           orderNumber: '111-0177387-1485024',
           orderDate: '2026-10-04',
@@ -72,7 +73,27 @@ test('processScannedAmazonFiles enforces strict 5-field deduplication without bl
           paymentMethod: '',
           status: 'Ordered',
         },
-        // Same Order #, Date, Qty, Item Price=null vs 29.99 -> Allowed because Item Description & Price differ
+      ],
+    },
+    // New file with differently-named upload containing identical individually-shipped items + Returned item -> all allowed
+    {
+      id: 'f1',
+      fileName: 'summary.jpeg',
+      mimeType: 'image/jpeg',
+      fileSize: 1024,
+      status: 'ready',
+      extractedItems: [
+        {
+          orderNumber: '111-0177387-1485024',
+          orderDate: '2026-10-04',
+          quantity: 1,
+          itemDescription: 'Snacks Neon Sign, LED Snacks Light Sign for Kitchen Pantry Decor',
+          itemPrice: 29.99,
+          total: 29.99,
+          shippedTo: 'Sandip Dasgupta',
+          paymentMethod: '',
+          status: 'Ordered',
+        },
         {
           orderNumber: '111-4489470-1300211',
           orderDate: '2026-10-04',
@@ -84,29 +105,49 @@ test('processScannedAmazonFiles enforces strict 5-field deduplication without bl
           paymentMethod: '',
           status: 'Ordered',
         },
-        // Second item in the same multi-item order with blank Item Price and blank Total
+        // Individually shipped identical item inside same order detail file
         {
           orderNumber: '111-4489470-1300211',
           orderDate: '2026-10-04',
           quantity: 1,
           itemDescription: 'Custom Neon Signs (REGISTRATION)',
-          itemPrice: null,
-          total: null,
+          itemPrice: 45.0,
+          total: 45.0,
           shippedTo: 'Sandip Dasgupta',
           paymentMethod: '',
-          status: 'Ordered',
+          status: 'Delivered',
         },
-        // Duplicate of item 2 inside the same upload batch -> Duplicate skipped
         {
           orderNumber: '111-4489470-1300211',
           orderDate: '2026-10-04',
           quantity: 1,
           itemDescription: 'Custom Neon Signs (REGISTRATION)',
-          itemPrice: null,
-          total: null,
+          itemPrice: 45.0,
+          total: 45.0,
           shippedTo: 'Sandip Dasgupta',
           paymentMethod: '',
-          status: 'Ordered',
+          status: 'Delivered',
+        },
+      ],
+    },
+    // Exact same file name uploaded again in the same queue -> skipped as duplicate
+    {
+      id: 'f2',
+      fileName: 'summary.jpeg',
+      mimeType: 'image/jpeg',
+      fileSize: 1024,
+      status: 'ready',
+      extractedItems: [
+        {
+          orderNumber: '111-9999999-9999999',
+          orderDate: '2026-10-05',
+          quantity: 1,
+          itemDescription: 'Another Item',
+          itemPrice: 10.0,
+          total: 10.0,
+          shippedTo: 'Sandip Dasgupta',
+          paymentMethod: '',
+          status: 'Delivered',
         },
       ],
     },
@@ -115,15 +156,28 @@ test('processScannedAmazonFiles enforces strict 5-field deduplication without bl
   const result = processScannedAmazonFiles(
     files,
     new Set([existingId]),
-    new Set([existingDupKey])
+    new Set([existingDupKey]),
+    {},
+    new Set(['already-recorded.pdf'])
   );
 
-  assert.equal(result.summary.totalExtracted, 4);
-  assert.equal(result.summary.readyToSync, 2);
+  assert.equal(result.summary.totalExtracted, 6);
+  assert.equal(result.summary.readyToSync, 4);
   assert.equal(result.summary.duplicateSkipped, 2);
-  assert.equal(result.readyOrders[0].itemPrice, null);
-  assert.equal(result.readyOrders[1].total, null);
+  assert.equal(result.readyOrders[1].itemPrice, null);
+  // Individually shipped identical items get distinct 12-digit IDs
+  assert.notEqual(result.readyOrders[2].uniqueId, result.readyOrders[3].uniqueId);
   assert.equal(isValid12DigitAmazonUniqueId(result.readyOrders[0].uniqueId), true);
+  assert.equal(isValid12DigitAmazonUniqueId(result.readyOrders[2].uniqueId), true);
+  assert.equal(isValid12DigitAmazonUniqueId(result.readyOrders[3].uniqueId), true);
+  assert.notEqual(result.readyOrders[0].uniqueId, existingId);
+});
+
+test('parseOptionalAmazonNumber converts negative or parenthesized Returned refund amounts into positive income values', () => {
+  assert.equal(parseOptionalAmazonNumber('-$29.99', 2), 29.99);
+  assert.equal(parseOptionalAmazonNumber('($45.50)', 2), 45.5);
+  assert.equal(parseOptionalAmazonNumber(-19.95, 2), 19.95);
+  assert.equal(parseOptionalAmazonNumber('$12.34', 2), 12.34);
 });
 
 test('normalizeAmazonStatus maps status strings cleanly and preserves blank', () => {
@@ -696,5 +750,251 @@ test('matchAmazonOrdersWithBank resolves same-amount bank charges by date proxim
   assert.equal(byRow.get(24)?.isRecon, 'Yes');
   assert.equal(plan.alreadyMatchedOrderCount, 1);
 });
+
+test('Returned items are not marked duplicate against the original Delivered item and keep positive amounts excluded from expense order totals', () => {
+  const files: UploadedAmazonFile[] = [
+    {
+      id: 'f-return',
+      fileName: 'order-with-return.pdf',
+      mimeType: 'application/pdf',
+      fileSize: 1500,
+      status: 'ready',
+      extractedItems: [
+        {
+          orderNumber: '111-7777777-8888888',
+          orderDate: '2026-10-10',
+          quantity: 1,
+          itemDescription: 'LED String Lights',
+          itemPrice: 29.99,
+          total: 29.99,
+          shippedTo: 'Sandip Dasgupta',
+          paymentMethod: 'Debit ... 1234',
+          status: 'Delivered',
+        },
+        {
+          orderNumber: '111-7777777-8888888',
+          orderDate: '2026-10-10',
+          quantity: 1,
+          itemDescription: 'LED String Lights',
+          itemPrice: -29.99 as unknown as number,
+          total: -29.99 as unknown as number,
+          shippedTo: 'Sandip Dasgupta',
+          paymentMethod: 'Debit ... 1234',
+          status: 'Returned',
+        },
+      ],
+    },
+  ];
+
+  const scanRes = processScannedAmazonFiles(files, new Set(), new Set());
+  assert.equal(scanRes.summary.readyToSync, 2);
+  assert.equal(scanRes.summary.duplicateSkipped, 0);
+  const [delivered, returned] = scanRes.readyOrders;
+  assert.equal(delivered.status, 'Delivered');
+  assert.equal(returned.status, 'Returned');
+  assert.equal(returned.itemPrice, 29.99);
+  assert.equal(returned.total, 29.99);
+  assert.notEqual(delivered.uniqueId, returned.uniqueId);
+
+  // When saved in sheet, Returned row must not inflate the Order ID's expense total
+  const sheetRows: AmazonOrderRecord[] = [
+    makeAmazonSheetRow({
+      sheetRowNumber: 30,
+      uniqueId: delivered.uniqueId,
+      orderNumber: '111-7777777-8888888',
+      orderDate: '2026-10-10',
+      itemDescription: 'LED String Lights',
+      itemPrice: 29.99,
+      total: 29.99,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 31,
+      uniqueId: returned.uniqueId,
+      orderNumber: '111-7777777-8888888',
+      orderDate: '2026-10-10',
+      itemDescription: 'LED String Lights',
+      itemPrice: 29.99,
+      total: 29.99,
+      status: 'Returned',
+    }),
+  ];
+
+  const expPlan = matchAmazonOrdersWithExpenses(sheetRows, [
+    makeExpense({
+      expId: 'EXP-RET-ORIG',
+      amount: 29.99,
+      date: '2026-10-10',
+      notes: 'Amazon',
+    }),
+  ]);
+  assert.equal(expPlan.rowUpdates.length, 1);
+  assert.equal(expPlan.rowUpdates[0].sheetRowNumber, 30);
+
+  const bankPlan = matchAmazonOrdersWithBank(sheetRows, [
+    makeBankTx({
+      uniqueId: 'BNK-RET-ORIG',
+      amount: -29.99,
+      date: '2026-10-11',
+      notes: 'Amazon',
+    }),
+  ]);
+  assert.equal(bankPlan.rowUpdates.length, 1);
+  assert.equal(bankPlan.rowUpdates[0].sheetRowNumber, 30);
+});
+
+test('Order Summary PDF with Delivered + Returned items ($90.08 + $23.94 = $114.02) matches $114.02 original Expense and Bank charges', () => {
+  const orderItems: AmazonOrderRecord[] = [
+    makeAmazonSheetRow({
+      sheetRowNumber: 40,
+      uniqueId: '500000000001',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'Comfy Package Straws',
+      itemPrice: 7.96,
+      total: 7.96,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 41,
+      uniqueId: '500000000002',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 2,
+      itemDescription: 'Sugar In The Raw',
+      itemPrice: 3.77,
+      total: 7.54,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 42,
+      uniqueId: '500000000003',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'Dealusy Coffee Cups',
+      itemPrice: 9.99,
+      total: 9.99,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 43,
+      uniqueId: '500000000004',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'Chalk Markers',
+      itemPrice: 8.27,
+      total: 8.27,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 44,
+      uniqueId: '500000000005',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'Milk Frother Wand',
+      itemPrice: 8.99,
+      total: 8.99,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 45,
+      uniqueId: '500000000006',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 2,
+      itemDescription: 'Paper Napkins',
+      itemPrice: 4.99,
+      total: 9.98,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 46,
+      uniqueId: '500000000007',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'SPLENDA Sweetener',
+      itemPrice: 7.38,
+      total: 7.38,
+      status: 'Delivered',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 47,
+      uniqueId: '500000000008',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 3,
+      itemDescription: 'Milk Frothing Pitcher',
+      itemPrice: 9.99,
+      total: 29.97,
+      status: 'Delivered',
+    }),
+    // Refunded / Returned items ($23.94)
+    makeAmazonSheetRow({
+      sheetRowNumber: 48,
+      uniqueId: '500000000009',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'Dealusy Coffee Cups',
+      itemPrice: 9.99,
+      total: 9.99,
+      status: 'Returned',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 49,
+      uniqueId: '500000000010',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'Comfy Package Straws',
+      itemPrice: 7.96,
+      total: 7.96,
+      status: 'Returned',
+    }),
+    makeAmazonSheetRow({
+      sheetRowNumber: 50,
+      uniqueId: '500000000011',
+      orderNumber: '113-4934328-0854635',
+      orderDate: '2026-10-03',
+      quantity: 1,
+      itemDescription: 'UniPleased Disposable Aprons',
+      itemPrice: 5.99,
+      total: 5.99,
+      status: 'Returned',
+    }),
+  ];
+
+  const expPlan = matchAmazonOrdersWithExpenses(orderItems, [
+    makeExpense({
+      expId: 'EXP-11402',
+      amount: 114.02,
+      date: '2026-10-03',
+      notes: 'Amazon',
+    }),
+  ]);
+  assert.equal(expPlan.matchedOrders.length, 1);
+  assert.equal(expPlan.matchedOrders[0].orderAmount, 114.02);
+  assert.equal(expPlan.rowUpdates.length, 11);
+
+  const bankPlan = matchAmazonOrdersWithBank(orderItems, [
+    makeBankTx({
+      uniqueId: 'BNK-11402',
+      amount: -114.02,
+      date: '2026-10-04',
+      notes: 'Amazon',
+    }),
+  ]);
+  assert.equal(bankPlan.matchedOrders.length, 1);
+  assert.equal(bankPlan.matchedOrders[0].orderAmount, 114.02);
+  assert.equal(bankPlan.rowUpdates.length, 11);
+  assert.equal(bankPlan.rowUpdates.every((u) => u.isRecon === 'Yes'), true);
+});
+
+
 
 

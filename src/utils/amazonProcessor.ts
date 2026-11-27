@@ -160,17 +160,19 @@ export function normalizeAmazonPaymentMethod(raw: string): string {
 export function parseOptionalAmazonNumber(raw: unknown, decimals = 2): number | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw) || raw < 0) return null;
+    if (!Number.isFinite(raw)) return null;
     const factor = 10 ** decimals;
-    return Math.round(raw * factor) / factor;
+    return Math.round(Math.abs(raw) * factor) / factor;
   }
   const str = String(raw).trim();
   if (!str) return null;
-  const cleaned = str.replace(/[$,\s]/g, '');
+  const isParenNegative = /^\(.*\)$/.test(str);
+  const cleaned = str.replace(/[()$,\s]/g, '');
   const n = Number.parseFloat(cleaned);
-  if (!Number.isFinite(n) || n < 0) return null;
+  if (!Number.isFinite(n)) return null;
+  const magnitude = Math.abs(isParenNegative ? -n : n);
   const factor = 10 ** decimals;
-  return Math.round(n * factor) / factor;
+  return Math.round(magnitude * factor) / factor;
 }
 
 function normalizeQuantityToken(quantity: number | null): string {
@@ -223,14 +225,23 @@ export function buildAmazonUniqueId(params: {
   quantity: number | null;
   itemDescription: string;
   itemPrice: number | null;
+  status?: AmazonOrderStatus;
+  occurrenceIndex?: number;
 }): string {
   const normOrder = normalizeAmazonOrderNumber(params.orderNumber);
   const normDate = normalizeAmazonDate(params.orderDate);
   const normQty = normalizeQuantityToken(params.quantity);
   const normDesc = normalizeDescriptionToken(params.itemDescription);
   const normPrice = normalizeItemPriceToken(params.itemPrice);
+  const occ = params.occurrenceIndex ?? 0;
+  const isReturned = params.status === 'Returned';
 
-  const canonicalPayload = `AMZ1|${normOrder}|${normDate}|${normQty}|${normDesc}|${normPrice}`;
+  const canonicalPayload =
+    occ === 0 && !isReturned
+      ? `AMZ1|${normOrder}|${normDate}|${normQty}|${normDesc}|${normPrice}`
+      : `AMZ1|${normOrder}|${normDate}|${normQty}|${normDesc}|${normPrice}|${
+          isReturned ? 'RET' : 'ORD'
+        }|${occ}`;
   const digest = sha256Bytes(canonicalPayload);
   const view = new DataView(digest.buffer);
   const hi64 = (BigInt(view.getUint32(0, false)) << 32n) | BigInt(view.getUint32(4, false));
@@ -241,8 +252,9 @@ export function buildAmazonUniqueId(params: {
 export function processScannedAmazonFiles(
   files: UploadedAmazonFile[],
   existingSheetIds: Set<string>,
-  existingSheetDuplicateKeys: Set<string>,
-  overrides: Record<string, Partial<AmazonOrderRecord>> = {}
+  _existingSheetDuplicateKeys: Set<string> = new Set(),
+  overrides: Record<string, Partial<AmazonOrderRecord>> = {},
+  existingSheetFileNames: Set<string> = new Set()
 ): {
   readyOrders: AmazonOrderRecord[];
   duplicateOrders: AmazonOrderRecord[];
@@ -250,12 +262,25 @@ export function processScannedAmazonFiles(
 } {
   const readyOrders: AmazonOrderRecord[] = [];
   const duplicateOrders: AmazonOrderRecord[] = [];
-  const seenIds = new Set<string>(existingSheetIds);
-  const seenDupKeys = new Set<string>(existingSheetDuplicateKeys);
+  const usedIds = new Set<string>(existingSheetIds);
+  const seenFileNames = new Set<string>(
+    Array.from(existingSheetFileNames, (name) => name.trim()).filter(Boolean)
+  );
   let totalExtracted = 0;
 
   for (const file of files) {
     if (file.status !== 'ready') continue;
+    const trimmedFileName = file.fileName.trim();
+    const isDuplicateFileInSheet = Boolean(
+      trimmedFileName && existingSheetFileNames.has(trimmedFileName)
+    );
+    const isDuplicateFile = Boolean(
+      trimmedFileName && seenFileNames.has(trimmedFileName)
+    );
+    if (trimmedFileName && !isDuplicateFile) {
+      seenFileNames.add(trimmedFileName);
+    }
+
     file.extractedItems.forEach((raw: RawExtractedAmazonItem, idx: number) => {
       totalExtracted++;
       const rowKey = `scan-${file.id}-${idx}`;
@@ -296,16 +321,12 @@ export function processScannedAmazonFiles(
         quantity: safeQty,
         itemDescription,
         itemPrice,
+        status,
       };
-      const uniqueId = buildAmazonUniqueId(keyArgs);
       const duplicateKey = buildAmazonDuplicateKey(keyArgs);
 
-      const isDupInSheet =
-        existingSheetIds.has(uniqueId) || existingSheetDuplicateKeys.has(duplicateKey);
-      const isDupInBatch =
-        !isDupInSheet && (seenIds.has(uniqueId) || seenDupKeys.has(duplicateKey));
-
-      if (isDupInSheet || isDupInBatch) {
+      if (isDuplicateFile) {
+        const uniqueId = buildAmazonUniqueId(keyArgs);
         duplicateOrders.push({
           rowKey,
           uniqueId,
@@ -326,15 +347,20 @@ export function processScannedAmazonFiles(
           sourceOrigin: 'scan',
           sourceFileName: file.fileName,
           isDuplicate: true,
-          duplicateReason: isDupInSheet
-            ? 'Already recorded in Amazon_Ledger'
-            : 'Duplicate order item in uploaded files',
+          duplicateReason: isDuplicateFileInSheet
+            ? `File "${trimmedFileName}" was already recorded in Amazon_Ledger`
+            : `Duplicate file "${trimmedFileName}" uploaded in queue`,
         });
         return;
       }
 
-      seenIds.add(uniqueId);
-      seenDupKeys.add(duplicateKey);
+      let occurrenceIndex = 0;
+      let uniqueId = buildAmazonUniqueId({ ...keyArgs, occurrenceIndex });
+      while (usedIds.has(uniqueId)) {
+        occurrenceIndex++;
+        uniqueId = buildAmazonUniqueId({ ...keyArgs, occurrenceIndex });
+      }
+      usedIds.add(uniqueId);
 
       readyOrders.push({
         rowKey,
